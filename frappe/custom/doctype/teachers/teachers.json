@@ -1,0 +1,100 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "name1:",
+ "creation": "2024-05-20 14:53:08.151430",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "details_section",
+  "teacher_name",
+  "age",
+  "select_wxvb",
+  "files_section",
+  "passport",
+  "photo",
+  "personal_tab",
+  "profile_section",
+  "text_editor_nvdr"
+ ],
+ "fields": [
+  {
+   "fieldname": "details_section",
+   "fieldtype": "Section Break",
+   "label": "Details"
+  },
+  {
+   "allow_in_quick_entry": 1,
+   "fieldname": "age",
+   "fieldtype": "Int",
+   "label": "Age"
+  },
+  {
+   "fieldname": "files_section",
+   "fieldtype": "Section Break",
+   "label": "Files"
+  },
+  {
+   "fieldname": "passport",
+   "fieldtype": "Attach",
+   "label": "Passport"
+  },
+  {
+   "fieldname": "photo",
+   "fieldtype": "Attach Image",
+   "label": "Photo"
+  },
+  {
+   "fieldname": "personal_tab",
+   "fieldtype": "Tab Break",
+   "label": "Personal"
+  },
+  {
+   "fieldname": "profile_section",
+   "fieldtype": "Section Break",
+   "label": "Profile"
+  },
+  {
+   "fieldname": "text_editor_nvdr",
+   "fieldtype": "Text Editor"
+  },
+  {
+   "fieldname": "select_wxvb",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Active\nInactive\nFired"
+  },
+  {
+   "allow_in_quick_entry": 1,
+   "fieldname": "teacher_name",
+   "fieldtype": "Data",
+   "label": "Name"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2024-05-21 10:19:35.912518",
+ "modified_by": "Administrator",
+ "module": "Custom",
+ "name": "Teachers",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,59 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-05-19 04:43:22.029991",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "location_section",
+  "location",
+  "title",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "location_section",
+   "fieldtype": "Section Break",
+   "label": "Location"
+  },
+  {
+   "fieldname": "location",
+   "fieldtype": "Geolocation"
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Title"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Long Text",
+   "label": "Description"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2024-05-19 04:52:51.492888",
+ "modified_by": "Administrator",
+ "module": "Custom",
+ "name": "Map",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
