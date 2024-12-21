@@ -500,7 +500,12 @@ frappe.Application = class Application {
 					sleep(500).then(() => {
 						let res = frappe.model.with_doctype(doc.doctype, () => {
 							let newdoc = frappe.model.copy_doc(doc);
-							newdoc.__newname = doc.name;
+							// Special handling for DocType
+							if (doc.doctype === "DocType") {
+								newdoc.__newname = doc.name || newdoc.name;
+							} else {
+								newdoc.__newname = doc.name;
+							}
 							delete doc.name;
 							newdoc.idx = null;
 							newdoc.__run_link_triggers = false;
