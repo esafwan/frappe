@@ -9,6 +9,8 @@
 6. [Storage and Application](#storage-and-application)
 7. [Export and Sync](#export-and-sync)
 8. [Implementation Details](#implementation-details)
+9. [Restrictions and Limitations](#restrictions-and-limitations)
+10. [Developer Mode Behavior](#developer-mode-behavior)
 
 ---
 
@@ -601,6 +603,253 @@ Ordering is maintained via Property Setters:
 
 ---
 
+## Restrictions and Limitations
+
+### DocType-Level Restrictions
+
+#### 1. Core DocTypes Cannot Be Customized
+
+**Core DocTypes** are system-level DocTypes that cannot be customized. Attempting to customize them will throw an error: `"Core DocTypes cannot be customized."`
+
+**List of Core DocTypes**:
+- `DefaultValue`
+- `DocType`
+- `DocField`
+- `DocPerm`
+- `DocType Action`
+- `DocType Link`
+- `User`
+- `Role`
+- `Has Role`
+- `Page`
+- `Module Def`
+- `Print Format`
+- `Report`
+- `Customize Form`
+- `Customize Form Field`
+- `Property Setter`
+- `Custom Field`
+- `Client Script`
+
+**Reference**: `frappe/model/__init__.py:101-120`
+
+**Validation**:
+- **Customize Form**: `frappe/custom/doctype/customize_form/customize_form.py:121-122`
+- **Custom Field**: `frappe/custom/doctype/custom_field/custom_field.py:273-274`
+- **UI Filter**: `frappe/custom/doctype/customize_form/customize_form.js:22`
+
+#### 2. Single DocTypes Cannot Be Customized
+
+Single DocTypes (where `issingle=1`) cannot be customized. They store data in the `tabSingles` table instead of a dedicated table.
+
+**Error**: `"Single DocTypes cannot be customized."`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:124-125`
+
+**UI Filter**: `frappe/custom/doctype/customize_form/customize_form.js:20`
+
+#### 3. Only Standard DocTypes Can Be Customized
+
+Custom DocTypes (where `custom=1`) cannot be customized via Customize Form. Only standard DocTypes (where `custom=0`) can be customized.
+
+**Error**: `"Only standard DocTypes are allowed to be customized from Customize Form."`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:127-128`
+
+**Note**: Custom DocTypes can still have Custom Fields added programmatically, but not through the Customize Form UI.
+
+**UI Filter**: `frappe/custom/doctype/customize_form/customize_form.js:21`
+
+#### 4. Domain Restrictions
+
+DocTypes can be restricted to specific domains. The Customize Form UI filters DocTypes based on active domains.
+
+**UI Filter**: `frappe/custom/doctype/customize_form/customize_form.js:23`
+
+```javascript
+["DocType", "restrict_to_domain", "in", frappe.boot.active_domains]
+```
+
+Only DocTypes that match the active domains (or have no domain restriction) are shown in the Customize Form.
+
+### Field-Level Restrictions
+
+#### 1. Cannot Enable "Allow on Submit" for Standard Fields
+
+Standard fields cannot have "Allow on Submit" enabled if it wasn't already enabled in the original DocType.
+
+**Error**: `"Not allowed to enable Allow on Submit for standard fields"`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:336-343`
+
+#### 2. Cannot Disable "Mandatory" for Standard Fields
+
+If a standard field is marked as mandatory (`reqd=1`), you cannot disable this requirement.
+
+**Error**: `"Not allowed to disable Mandatory for standard fields"`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:345-353`
+
+#### 3. Cannot Set "In List View" for Certain Field Types
+
+Fields of type `Section Break`, `Column Break`, `Tab Break`, `HTML`, `Table`, `Table MultiSelect`, `Button`, `Image`, `Fold`, or `Heading` cannot be shown in list view (except `Attach Image`).
+
+**Error**: `"'In List View' not allowed for type {fieldtype} in row {idx}"`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:355-364`
+
+**Field Types**: Defined in `frappe/model/__init__.py:53-64` (`no_value_fields`)
+
+#### 4. Cannot Unset "Read Only" for Read-Only Fields
+
+If a standard field has `read_only=1` set in the DocType JSON, you cannot make it editable.
+
+**Error**: `"You cannot unset 'Read Only' for field {label}"`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:376-386`
+
+#### 5. Cannot Set "Options" for Certain Field Types
+
+Only fields of type `Read Only`, `HTML`, or `Data` can have their `options` property changed.
+
+**Error**: `"You can't set 'Options' for field {label}"`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:388-390`
+
+**Allowed Types**: Defined in `frappe/custom/doctype/customize_form/customize_form.py:834` (`ALLOWED_OPTIONS_CHANGE`)
+
+#### 6. Cannot Set "Translatable" for Unsupported Field Types
+
+Only certain field types support translation. Attempting to set `translatable=1` for unsupported types will fail.
+
+**Error**: `"You can't set 'Translatable' for field {label}"`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:392-394`
+
+**Validation**: `frappe/model/docfield.py` - `supports_translation()` function
+
+#### 7. Field Type Changes Are Restricted
+
+Field types can only be changed within allowed groups. Attempting to change from one type to another outside the allowed groups will fail.
+
+**Error**: `"Fieldtype cannot be changed from {old} to {new} in row {idx}"`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:569-591`
+
+**Allowed Changes**: Defined in `frappe/custom/doctype/customize_form/customize_form.py:822-832` (`ALLOWED_FIELDTYPE_CHANGE`)
+
+**Allowed Groups**:
+- `("Currency", "Float", "Percent")`
+- `("Small Text", "Data")`
+- `("Text", "Data")`
+- `("Text", "Text Editor", "Code", "Signature", "HTML Editor")`
+- `("Data", "Select")`
+- `("Text", "Small Text", "Long Text")`
+- `("Text", "Data", "Barcode")`
+- `("Code", "Geolocation")`
+- `("Table", "Table MultiSelect")`
+
+**Note**: Virtual fields (`is_virtual=1`) can have their field type changed without restriction.
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.py:570-571`
+
+#### 8. Cannot Delete Standard Fields
+
+Standard fields cannot be deleted. They can only be hidden.
+
+**Error**: `"Cannot delete standard field {label}. You can hide it instead."`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.js:318-324`
+
+#### 9. Cannot Delete System Generated Fields
+
+System-generated fields cannot be deleted, even if they are custom fields.
+
+**Error**: `"Cannot delete system generated field {label}. You can hide it instead."`
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.js:309-316`
+
+### Standard Links, Actions, and States Restrictions
+
+#### Cannot Delete Standard Links/Actions/States
+
+Standard DocType Links, Actions, and States cannot be deleted. They can only be hidden.
+
+**Errors**:
+- `"Cannot delete standard link. You can hide it if you want"`
+- `"Cannot delete standard action. You can hide it if you want"`
+- `"Cannot delete standard document state."`
+
+**Reference**: 
+- Links: `frappe/custom/doctype/customize_form/customize_form.js:342-349`
+- Actions: `frappe/custom/doctype/customize_form/customize_form.js:364-371`
+- States: `frappe/custom/doctype/customize_form/customize_form.js:386-393`
+
+---
+
+## Developer Mode Behavior
+
+### What is Developer Mode?
+
+Developer mode (`developer_mode=1` in `site_config.json`) enables additional features for developers, including exporting customizations and auto-exporting standard documents.
+
+### Developer Mode Restrictions
+
+#### 1. Export Customizations Requires Developer Mode
+
+The `export_customizations()` function can only be called when developer mode is enabled.
+
+**Error**: `"Only allowed to export customizations in developer mode"`
+
+**Reference**: `frappe/modules/utils.py:64-65`
+
+**UI**: The "Export Customizations" button only appears in developer mode.
+
+**Reference**: `frappe/custom/doctype/customize_form/customize_form.js:240`
+
+```javascript
+if (frappe.boot.developer_mode) {
+    frm.add_custom_button(__("Export Customizations"), ...)
+}
+```
+
+#### 2. Auto-Export Standard Documents Requires Developer Mode
+
+When `export_module_json()` is called for standard documents, it only exports to files if developer mode is enabled.
+
+**Reference**: `frappe/modules/utils.py:32`
+
+```python
+if not frappe.flags.in_import and is_standard and frappe.conf.developer_mode:
+    export_to_files(...)
+```
+
+This means that when you create or modify standard documents (like Print Formats, Reports, etc.) in developer mode, they are automatically exported to JSON files in the app directory.
+
+### Developer Mode Benefits
+
+1. **Export Customizations**: Export customizations to JSON files for version control
+2. **Auto-Export**: Standard documents are automatically exported to files
+3. **Development Workflow**: Easier to develop and maintain customizations
+
+### Enabling Developer Mode
+
+Add to `site_config.json`:
+```json
+{
+    "developer_mode": 1
+}
+```
+
+Or set via environment variable:
+```bash
+export FRAPPE_DEVELOPER_MODE=1
+```
+
+**Note**: Developer mode should **NOT** be enabled in production environments as it can expose sensitive information and allow unintended modifications.
+
+---
+
 ## Summary
 
 DocType customization in Frappe works through:
@@ -618,6 +867,29 @@ This architecture ensures:
 - ✅ Customizations can be version controlled
 - ✅ Customizations can be shared via custom apps
 - ✅ No JSON file modifications required
+
+### Restrictions Summary
+
+**DocType Restrictions**:
+- ❌ Core DocTypes (19 types) cannot be customized
+- ❌ Single DocTypes cannot be customized
+- ❌ Custom DocTypes cannot be customized via UI (only standard)
+- ⚠️ Domain-restricted DocTypes filtered by active domains
+
+**Field Restrictions**:
+- ❌ Cannot enable "Allow on Submit" for standard fields
+- ❌ Cannot disable "Mandatory" for standard fields
+- ❌ Cannot set "In List View" for no-value field types
+- ❌ Cannot unset "Read Only" for read-only fields
+- ❌ Cannot set "Options" for unsupported field types
+- ❌ Cannot set "Translatable" for unsupported field types
+- ❌ Field type changes restricted to allowed groups
+- ❌ Cannot delete standard/system-generated fields
+
+**Developer Mode**:
+- ✅ Export customizations requires developer mode
+- ✅ Auto-export standard documents requires developer mode
+- ⚠️ Should not be enabled in production
 
 ---
 
