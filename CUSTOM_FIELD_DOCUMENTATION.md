@@ -19,6 +19,9 @@ Custom Fields in Frappe allow users to extend standard DocTypes with additional 
 7. [Field Ordering & Positioning](#field-ordering--positioning)
 8. [Custom Apps Integration](#custom-apps-integration)
 9. [API Reference](#api-reference)
+10. [Restrictions & Limitations](#restrictions--limitations)
+11. [Developer Mode Behavior](#developer-mode-behavior)
+12. [Best Practices](#best-practices)
 
 ---
 
@@ -627,6 +630,119 @@ Sorts fields including custom fields based on insert_after.
 
 ## Restrictions & Limitations
 
+### DocType Restrictions
+
+Custom fields **cannot** be added to the following types of DocTypes:
+
+#### 1. Core DocTypes
+
+Core DocTypes are system-level doctypes that cannot be customized. The list includes:
+
+**Location**: `frappe/model/__init__.py:101-120`
+
+```python
+core_doctypes_list = (
+    "DefaultValue",
+    "DocType",
+    "DocField",
+    "DocPerm",
+    "DocType Action",
+    "DocType Link",
+    "User",
+    "Role",
+    "Has Role",
+    "Page",
+    "Module Def",
+    "Print Format",
+    "Report",
+    "Customize Form",
+    "Customize Form Field",
+    "Property Setter",
+    "Custom Field",
+    "Client Script",
+)
+```
+
+**Validation**: `frappe/custom/doctype/custom_field/custom_field.py:273-274`
+
+```python
+if doctype in core_doctypes_list:
+    return frappe.msgprint(_("Custom Fields cannot be added to core DocTypes."))
+```
+
+**UI Filter**: `frappe/custom/doctype/custom_field/custom_field.js:13`
+
+```javascript
+["DocType", "name", "not in", frappe.model.core_doctypes_list]
+```
+
+#### 2. Single DocTypes
+
+Single DocTypes (`issingle = 1`) store data in the `tabSingles` table and cannot have custom fields.
+
+**UI Filter**: `frappe/custom/doctype/custom_field/custom_field.js:11`
+
+```javascript
+["DocType", "issingle", "=", 0]
+```
+
+**Validation**: `frappe/custom/doctype/customize_form/customize_form.py:124-125`
+
+```python
+if meta.issingle:
+    frappe.throw(_("Single DocTypes cannot be customized."))
+```
+
+**Note**: Single DocTypes cannot be customized at all, not just via custom fields.
+
+#### 3. Custom DocTypes
+
+Custom fields can only be added to **standard** DocTypes, not custom DocTypes.
+
+**UI Filter**: `frappe/custom/doctype/custom_field/custom_field.js:12`
+
+```javascript
+["DocType", "custom", "=", 0]
+```
+
+**Validation**: `frappe/custom/doctype/custom_field/custom_field.py:276-277`
+
+```python
+if meta.custom:
+    return frappe.msgprint(_("Custom Fields can only be added to a standard DocType."))
+```
+
+**Also Checked In**: `frappe/custom/doctype/customize_form/customize_form.py:127-128`
+
+```python
+if meta.custom:
+    frappe.throw(_("Only standard DocTypes are allowed to be customized from Customize Form."))
+```
+
+#### 4. Module Restrictions (Non-Administrator Users)
+
+For non-Administrator users, custom fields cannot be added to DocTypes in the "Core" or "Custom" modules.
+
+**UI Filter**: `frappe/custom/doctype/custom_field/custom_field.js:16-17`
+
+```javascript
+if (frappe.session.user !== "Administrator") {
+    filters.push(["DocType", "module", "not in", ["Core", "Custom"]]);
+}
+```
+
+**Note**: Administrator users can add custom fields to any standard DocType (except core, single, and custom doctypes).
+
+#### 5. Domain Restrictions
+
+DocTypes with `restrict_to_domain` are filtered based on active domains.
+
+**UI Filter**: `frappe/custom/doctype/custom_field/custom_field.js:14`
+
+```javascript
+["DocType", "restrict_to_domain", "in", frappe.boot.active_domains]
+```
+
 ### Restricted Fieldnames
 
 The following fieldnames cannot be used (automatically suffixed with "1"):
@@ -638,28 +754,6 @@ restricted = (
     "name", "parent", "creation", "modified", "modified_by",
     "parentfield", "parenttype", "file_list", "flags", "docstatus"
 )
-```
-
-### Core DocTypes
-
-Custom fields cannot be added to core DocTypes:
-
-**Check**: `frappe/custom/doctype/custom_field/custom_field.py:273-274`
-
-```python
-if doctype in core_doctypes_list:
-    return frappe.msgprint(_("Custom Fields cannot be added to core DocTypes."))
-```
-
-### Custom DocTypes
-
-Custom fields can only be added to standard DocTypes:
-
-**Check**: `frappe/custom/doctype/custom_field/custom_field.py:276-277`
-
-```python
-if meta.custom:
-    return frappe.msgprint(_("Custom Fields can only be added to a standard DocType."))
 ```
 
 ### Fieldtype Changes
@@ -675,6 +769,92 @@ if (not self.is_virtual and
     frappe.throw(_("Fieldtype cannot be changed from {0} to {1}"))
 ```
 
+### Summary of DocType Restrictions
+
+| Restriction | Condition | Location |
+|------------|-----------|----------|
+| Core DocTypes | `doctype in core_doctypes_list` | `frappe/model/__init__.py:101-120` |
+| Single DocTypes | `issingle = 1` | `frappe/custom/doctype/custom_field/custom_field.js:11` |
+| Custom DocTypes | `custom = 1` | `frappe/custom/doctype/custom_field/custom_field.js:12` |
+| Core/Custom Modules | Non-Administrator users | `frappe/custom/doctype/custom_field/custom_field.js:16-17` |
+| Domain Restricted | Based on active domains | `frappe/custom/doctype/custom_field/custom_field.js:14` |
+
+---
+
+## Developer Mode Behavior
+
+Developer mode (`frappe.conf.developer_mode = 1`) affects custom field functionality in several ways:
+
+### 1. Export Customizations
+
+Exporting custom fields to JSON files is **only allowed in developer mode**.
+
+**Function**: `export_customizations()`  
+**Location**: `frappe/modules/utils.py:54-97`
+
+**Restriction**: `frappe/modules/utils.py:64-65`
+
+```python
+if not frappe.conf.developer_mode:
+    frappe.throw(_("Only allowed to export customizations in developer mode"))
+```
+
+**What It Does**:
+- Exports custom fields, property setters, and custom permissions to `{app}/{module}/custom/{doctype}.json`
+- Recursively exports customizations for child table doctypes
+- Sets `sync_on_migrate` flag for automatic syncing during migrations
+
+**Usage**: Called from UI when exporting customizations for a DocType.
+
+### 2. Auto-Export on Standard Document Creation
+
+When creating standard documents (not custom) in developer mode, they are automatically exported to files.
+
+**Location**: `frappe/modules/utils.py:32-40`
+
+```python
+if not frappe.flags.in_import and is_standard and frappe.conf.developer_mode:
+    from frappe.modules.export_file import export_to_files
+    export_to_files(record_list=[[doc.doctype, doc.name]], record_module=module, create_init=is_standard)
+```
+
+**Note**: This applies to standard DocTypes, not specifically to custom fields, but affects the overall customization workflow.
+
+### 3. Developer Mode in Frontend
+
+Developer mode status is available in the frontend via `frappe.boot.developer_mode`:
+
+**Usage Examples**:
+- `frappe/public/js/frappe/utils/utils.js:1685` - Conditional UI behavior
+- `frappe/public/js/frappe/views/reports/query_report.js:230` - Setting standard flags
+- `frappe/public/js/frappe/views/pageview.js:23` - Caching behavior
+
+### 4. Impact on Custom Field Workflow
+
+**With Developer Mode Enabled**:
+- ✅ Can export custom fields to JSON files
+- ✅ Custom fields can be synced from JSON files during migrations
+- ✅ Standard documents auto-exported to files
+- ✅ Better integration with version control
+
+**Without Developer Mode**:
+- ❌ Cannot export custom fields to JSON files
+- ✅ Can still create custom fields via UI or API
+- ✅ Custom fields still work normally
+- ✅ Can still import from existing JSON files (via sync)
+
+### Setting Developer Mode
+
+Developer mode is set in `site_config.json`:
+
+```json
+{
+    "developer_mode": 1
+}
+```
+
+Or via environment variable or command line flag during bench setup.
+
 ---
 
 ## Best Practices
@@ -685,6 +865,8 @@ if (not self.is_virtual and
 4. **Virtual Fields**: Use `is_virtual: 1` for computed fields that don't need database storage
 5. **Positioning**: Always specify `insert_after` for predictable field ordering
 6. **Validation**: Don't skip validation unless necessary (e.g., during migrations)
+7. **Developer Mode**: Enable developer mode when developing custom apps to export customizations
+8. **Sync on Migrate**: Set `sync_on_migrate: true` in custom JSON files for automatic syncing
 
 ---
 
