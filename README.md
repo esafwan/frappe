@@ -18,6 +18,10 @@
     <a href="https://docs.frappe.io/framework">Documentation</a>
 </div>
 
+For developer-focused architecture notes inside this repository, see:
+
+- `docs/search/` — current search systems and the pluggable backends plan.
+
 ## Frappe Framework
 Full-stack web application framework that uses Python and MariaDB on the server side and a tightly integrated client side library. Built for ERPNext.
 
