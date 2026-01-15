@@ -210,7 +210,12 @@ def search_widget(
 	order_by = f"idx desc, {order_by_based_on_meta}"
 
 	if not for_link_validation and not meta.translated_doctype:
-		_relevance = _build_link_search_relevance_expr(meta, txt)
+		_txt = frappe.db.escape((txt or "").replace("%", "").replace("@", ""))
+		# locate returns 0 if string is not found, convert 0 to null and then sort null to end in order by
+		_relevance_expr = {"DIV": [1, {"NULLIF": [{"LOCATE": [_txt, "name"]}, 0]}]}
+
+		# For MariaDB, wrap in IFNULL for sorting to push nulls to end
+		_relevance = {"IFNULL": [_relevance_expr, -9999], "as": "_relevance"}
 		formatted_fields.append(_relevance)
 		order_by = f"_relevance desc, {order_by}"
 
@@ -241,8 +246,9 @@ def search_widget(
 				)
 			)
 
-		# Sorting the values array so that relevant results always come first.
-		# Prefer prefix matches (case-insensitive) across returned columns, then SQL relevance.
+		# Sorting the values array so that relevant results always come first
+		# This will first bring elements on top in which query is a prefix of element
+		# Then it will bring the rest of the elements and sort them in lexicographical order
 		values = sorted(values, key=lambda x: relevance_sorter(x, txt, as_dict))
 
 		# remove _relevance from results
@@ -372,123 +378,9 @@ def scrub_custom_query(query, key, txt):
 	return query
 
 
-def relevance_sorter(key, query: str, as_dict: bool):
-	"""Sort Link search results by:
-
-	1) Prefix matches first (case-insensitive) across returned text columns.
-	2) Higher computed SQL relevance next (when available).
-	3) Then lexicographical by the primary value (name).
-	"""
-
-	def _row_values():
-		if as_dict:
-			# keep only text-ish values; ignore internal relevance key separately
-			return [v for k, v in key.items() if k != "_relevance"]
-		# as_list: last column is _relevance (added in search_widget for non-translated doctypes)
-		return list(key[:-1]) if len(key) > 1 else list(key)
-
-	needle = (query or "").casefold()
-	values = _row_values()
-
-	def _is_prefix_match(val) -> bool:
-		if val is None:
-			return False
-		return cstr(_(val)).casefold().startswith(needle)
-
-	prefix_match = any(_is_prefix_match(v) for v in values)
-
-	# Prefer higher SQL relevance (when present). Fall back to 0.
-	relevance = 0
-	if as_dict:
-		relevance = key.get("_relevance") or 0
-	else:
-		# _relevance is appended as last field in search_widget for non-translated doctypes
-		if len(key) > 1:
-			relevance = key[-1] or 0
-
-	primary = _(key.name if as_dict else key[0])
-	return (not prefix_match, -float(relevance), cstr(primary).casefold())
-
-
-def _get_link_search_relevance_fields(meta) -> list[str]:
-	"""Return ordered fields used to compute link search relevance.
-
-	Ordering matters: earlier fields get higher weight.
-	"""
-	field_types = {
-		"Data",
-		"Text",
-		"Small Text",
-		"Long Text",
-		"Long Text",
-		"Link",
-		"Select",
-		"Read Only",
-		"Text Editor",
-	}
-
-	fields: list[str] = []
-
-	# Intention: allow doctypes to "lead" relevance by defining search_fields order.
-	if meta.search_fields:
-		fields.extend(meta.get_search_fields())
-
-	# Title field should stay relevant (when present) even if not explicitly added.
-	if meta.title_field:
-		fields.append(meta.title_field)
-
-	# Always include name as a fallback.
-	fields.append("name")
-
-	# De-dupe while preserving order + filter to safe text-like columns
-	out: list[str] = []
-	seen: set[str] = set()
-	for f in fields:
-		f = (f or "").strip()
-		if not f or f in seen:
-			continue
-		fmeta = None if f == "name" else meta.get_field(f)
-		if f == "name" or (fmeta and fmeta.fieldtype in field_types):
-			out.append(f)
-			seen.add(f)
-
-	return out
-
-
-def _build_link_search_relevance_expr(meta, txt: str):
-	"""Build a weighted relevance expression for ordering link search results.
-
-	This returns a Query Builder expression in dict form. Uses IFNULL to stay portable
-	across DBs (Postgres translates to COALESCE during execution).
-	"""
-	relevance_fields = _get_link_search_relevance_fields(meta)
-	if not relevance_fields:
-		return {"IFNULL": [0, -9999], "as": "_relevance"}
-
-	_txt = frappe.db.escape((txt or "").replace("%", "").replace("@", ""))
-	needle = {"LOWER": [_txt]}
-
-	def _haystack(fieldname: str):
-		# autoincrement doctypes can have integer `name` -> avoid LOWER(name)
-		if fieldname == "name" and meta.autoname == "autoincrement":
-			return fieldname
-		return {"LOWER": [fieldname]}
-
-	def _score(fieldname: str, weight: int):
-		# 1 / NULLIF(LOCATE(needle, haystack), 0)
-		loc = {"LOCATE": [needle, _haystack(fieldname)]}
-		inv = {"DIV": [1, {"NULLIF": [loc, 0]}]}
-		inv = {"IFNULL": [inv, 0]}
-		return {"MUL": [weight, inv]}
-
-	# Higher weight for earlier fields.
-	expr = None
-	max_weight = len(relevance_fields)
-	for i, fieldname in enumerate(relevance_fields):
-		part = _score(fieldname, max_weight - i)
-		expr = part if expr is None else {"ADD": [expr, part]}
-
-	return {"IFNULL": [expr, -9999], "as": "_relevance"}
+def relevance_sorter(key, query, as_dict):
+	value = _(key.name if as_dict else key[0])
+	return (cstr(value).casefold().startswith(query.casefold()) is not True, value)
 
 
 @frappe.whitelist()

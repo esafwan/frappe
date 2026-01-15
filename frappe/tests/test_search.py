@@ -183,65 +183,6 @@ class TestSearch(IntegrationTestCase):
 		result = search(txt="(txt)")
 		self.assertEqual(result, [])
 
-	def test_link_search_respects_search_fields_order(self):
-		"""Ensure link search relevance uses ordered search_fields (not just `name`)."""
-
-		doctype = "Test Product Search"
-		frappe.delete_doc_if_exists("DocType", doctype, force=True)
-
-		new_doctype(
-			name=doctype,
-			autoname="field:item_code",
-			title_field="item_name",
-			show_title_field_in_link=1,
-			search_fields="base_product,item_name",
-			fields=[
-				{"label": "Item Code", "fieldname": "item_code", "fieldtype": "Data"},
-				{"label": "Item Name", "fieldname": "item_name", "fieldtype": "Data"},
-				{"label": "Base Product", "fieldname": "base_product", "fieldtype": "Data"},
-			],
-			permissions=[{"role": "System Manager", "read": 1, "write": 1}],
-		).insert()
-
-		self.addCleanup(lambda: frappe.delete_doc("DocType", doctype, force=True, ignore_missing=True))
-
-		milk = frappe.get_doc(
-			{
-				"doctype": doctype,
-				"item_code": "MILK",
-				"item_name": "Milk",
-				"base_product": "milk",
-			}
-		).insert()
-		almond_milk = frappe.get_doc(
-			{
-				"doctype": doctype,
-				"item_code": "ALMOND-MILK",
-				"item_name": "Almond Milk",
-				"base_product": "milk",
-			}
-		).insert()
-		choc_milkshake = frappe.get_doc(
-			{
-				"doctype": doctype,
-				"item_code": "CHOC-MILKSHAKE",
-				"item_name": "Chocolate Milkshake",
-				"base_product": "",
-			}
-		).insert()
-
-		self.addCleanup(lambda: frappe.delete_doc(doctype, milk.name, force=True, ignore_missing=True))
-		self.addCleanup(lambda: frappe.delete_doc(doctype, almond_milk.name, force=True, ignore_missing=True))
-		self.addCleanup(lambda: frappe.delete_doc(doctype, choc_milkshake.name, force=True, ignore_missing=True))
-
-		# Make ordering deterministic when relevance ties.
-		frappe.db.set_value(doctype, milk.name, "idx", 10)
-		frappe.db.set_value(doctype, almond_milk.name, "idx", 9)
-		frappe.db.set_value(doctype, choc_milkshake.name, "idx", 8)
-
-		results = search_link(doctype=doctype, txt="milk", filters=None, page_length=10)
-		self.assertEqual([r["value"] for r in results], ["MILK", "ALMOND-MILK", "CHOC-MILKSHAKE"])
-
 	def test_search_link_with_ignore_user_permissions(self):
 		"""Test that ignore_user_permissions works correctly in search_link
 		when the link field has ignore_user_permissions enabled"""
