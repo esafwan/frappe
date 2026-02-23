@@ -15,8 +15,10 @@ A comprehensive guide to configuring and understanding OAuth-based email in Frap
 7. [Token Lifecycle and Refresh](#token-lifecycle-and-refresh)
 8. [SMTP Port Blocking (DigitalOcean) and OAuth](#smtp-port-blocking-digitalocean-and-oauth)
 9. [Alternatives for Port-Blocked Environments](#alternatives-for-port-blocked-environments)
-10. [Troubleshooting](#troubleshooting)
-11. [Code Reference Map](#code-reference-map)
+10. [Bypassing SMTP: Mailgun HTTP API via Frappe Hook](#bypassing-smtp-mailgun-http-api-via-frappe-hook)
+11. [Building the Mailgun Frappe App: Detailed Plan](#building-the-mailgun-frappe-app-detailed-plan)
+12. [Troubleshooting](#troubleshooting)
+13. [Code Reference Map](#code-reference-map)
 
 ---
 
@@ -572,6 +574,647 @@ Some SMTP services offer connections on port 2525 (non-standard) which may not b
 ### Option 5: Gmail API (Not Built-in)
 
 The Gmail API sends emails via HTTPS (port 443) using `POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send`. This would bypass port blocking entirely, but **Frappe does not have built-in support for Gmail API email sending**. This would require a custom app.
+
+---
+
+## Bypassing SMTP: Mailgun HTTP API via Frappe Hook
+
+This is the solution for environments where SMTP ports are blocked (DigitalOcean, etc.). Instead of fighting port restrictions, we intercept all outgoing emails at the Frappe level and route them through Mailgun's HTTP API (port 443, which is never blocked).
+
+### The Key: `override_email_send` Hook
+
+Frappe provides a hook called `override_email_send` that intercepts **every** outgoing email before it reaches SMTP. This is the exact integration point we need.
+
+From `frappe/email/doctype/email_queue/email_queue.py:187-203`:
+
+```python
+message = ctx.build_message(recipient.recipient)
+if method := get_hook_method("override_email_send"):
+    method(self, self.sender, recipient.recipient, message)
+elif not frappe.in_test or frappe.flags.testing_email:
+    if ctx.email_account_doc.service == "Frappe Mail":
+        ctx.frappe_mail_client.send_raw(...)
+    else:
+        ctx.smtp_server.session.sendmail(...)
+```
+
+**How it works:**
+1. Frappe builds the complete MIME message (headers, body, attachments — everything)
+2. Before sending via SMTP, it checks for an `override_email_send` hook
+3. If the hook exists, it calls the hook function **instead of** SMTP
+4. The hook receives the fully-built MIME message and can send it any way it wants
+5. If the hook function completes without raising an exception, the email is marked as "Sent"
+
+**Hook function signature:**
+```python
+def send_via_mailgun(email_queue_doc, sender, recipient, message):
+    """
+    Args:
+        email_queue_doc: EmailQueue document (has .name, .sender, .recipients, .reference_doctype, etc.)
+        sender: str - The sender email address (e.g., "John <john@example.com>")
+        recipient: str - Single recipient email address
+        message: bytes - Complete RFC-compliant MIME message (ready to send as-is)
+    """
+```
+
+**Critical detail:** The `message` parameter is the **complete MIME message** as bytes — headers, body, attachments, everything. This maps perfectly to Mailgun's `POST /v3/{domain}/messages.mime` endpoint, which accepts pre-built MIME messages.
+
+### How Mailgun's MIME Endpoint Works
+
+Mailgun offers two sending methods:
+1. **Component-based** (`POST /v3/{domain}/messages`) — you pass from, to, subject, text, html separately
+2. **MIME-based** (`POST /v3/{domain}/messages.mime`) — you pass a pre-built RFC-compliant MIME string
+
+Since Frappe already builds the complete MIME, we use **method 2** — just forward the MIME as-is. This preserves all formatting, headers, attachments, inline images, tracking pixels, etc.
+
+```bash
+# Mailgun MIME sending endpoint
+curl -s --user 'api:YOUR_API_KEY' \
+    https://api.mailgun.net/v3/YOUR_DOMAIN/messages.mime \
+    -F to=recipient@example.com \
+    -F message=@/path/to/mime_message.eml
+```
+
+In Python with `requests`:
+```python
+import requests
+
+response = requests.post(
+    f"https://api.mailgun.net/v3/{domain}/messages.mime",
+    auth=("api", api_key),
+    data={"to": recipient},
+    files={"message": ("message.mime", mime_bytes)},
+)
+```
+
+### Architecture with the Hook
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  With override_email_send Hook               │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Email Queue                                                │
+│       │                                                     │
+│       ▼                                                     │
+│  build_message()  ──► Complete MIME (bytes)                  │
+│       │                                                     │
+│       ▼                                                     │
+│  get_hook_method("override_email_send")                     │
+│       │                                                     │
+│       ▼  (hook exists!)                                     │
+│  mailgun_app.send_via_mailgun(                              │
+│      email_queue_doc, sender, recipient, mime_message       │
+│  )                                                          │
+│       │                                                     │
+│       ▼                                                     │
+│  POST https://api.mailgun.net/v3/{domain}/messages.mime     │
+│       │         (port 443 — HTTPS, never blocked)           │
+│       ▼                                                     │
+│  Mailgun delivers email                                     │
+│                                                             │
+│  ✗ SMTP is NEVER used                                       │
+│  ✗ Port 587/465/25 is NEVER needed                          │
+│  ✓ Only port 443 (HTTPS) is needed                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Mailgun API Authentication
+
+Mailgun uses HTTP Basic Auth:
+- **Username**: `api` (literal string)
+- **Password**: Your Mailgun API key (e.g., `key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`)
+
+Two types of API keys:
+1. **Primary Account API Key** — full access to all domains and endpoints
+2. **Domain Sending Key** — can only send via `/messages` and `/messages.mime` for a specific domain
+
+For this integration, a **Domain Sending Key** is sufficient and more secure.
+
+### Mailgun Regions
+
+| Region | API Base URL | SMTP Server |
+|--------|-------------|-------------|
+| US | `https://api.mailgun.net` | `smtp.mailgun.org` |
+| EU | `https://api.eu.mailgun.net` | `smtp.eu.mailgun.org` |
+
+Your API calls must use the correct region URL matching where your domain is provisioned.
+
+### Mailgun Rate Limits and Constraints
+
+- Maximum message size: **25MB**
+- Rate limits are in place (headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`)
+- Supports gzip-compressed request bodies (`Content-Encoding: gzip`)
+- Email addresses must pass RFC5321/RFC5322 syntax checks
+
+### Response Codes to Handle
+
+| Code | Meaning | Action |
+|------|---------|--------|
+| 200 | Success | Email accepted for delivery |
+| 400 | Bad Request | Invalid parameters — log and fail |
+| 401 | Unauthorized | Bad API key — log and fail |
+| 403 | Forbidden | No access to domain — log and fail |
+| 429 | Rate Limited | Retry with backoff (check `X-RateLimit-Reset` header) |
+| 500 | Server Error | Retry with exponential backoff |
+
+---
+
+## Building the Mailgun Frappe App: Detailed Plan
+
+### Overview
+
+We will build a custom Frappe app called `frappe_mailgun` that:
+1. Intercepts all outgoing emails using the `override_email_send` hook
+2. Sends them via Mailgun's HTTP API (`/v3/{domain}/messages.mime`)
+3. Provides a settings doctype for Mailgun configuration
+4. Handles errors, retries, and logging
+
+### App Structure
+
+```
+frappe_mailgun/
+├── frappe_mailgun/
+│   ├── __init__.py
+│   ├── hooks.py                          # Register override_email_send hook
+│   ├── mailgun.py                        # Core Mailgun HTTP API client
+│   ├── frappe_mailgun/
+│   │   └── doctype/
+│   │       └── mailgun_settings/
+│   │           ├── __init__.py
+│   │           ├── mailgun_settings.py   # Settings doctype controller
+│   │           ├── mailgun_settings.json # DocType definition
+│   │           └── test_mailgun_settings.py
+│   └── templates/
+│       └── (empty)
+├── setup.py
+├── requirements.txt                      # requests (already a frappe dependency)
+└── README.md
+```
+
+### Step 1: Scaffold the App
+
+```bash
+cd ~/frappe-bench
+bench new-app frappe_mailgun
+# Answer prompts:
+#   App Title: Frappe Mailgun
+#   App Description: Send emails via Mailgun HTTP API, bypassing SMTP port restrictions
+#   App Publisher: Your Name
+#   App Email: your@email.com
+#   App License: MIT
+
+bench install-app frappe_mailgun --site your-site.localhost
+```
+
+### Step 2: Create the Mailgun Settings DocType
+
+This is a **Single** doctype (only one instance, like System Settings) to store Mailgun credentials.
+
+**DocType: Mailgun Settings**
+
+| Field | Fieldtype | Label | Notes |
+|-------|-----------|-------|-------|
+| `enabled` | Check | Enabled | Master switch |
+| `sb_credentials` | Section Break | Credentials | |
+| `api_key` | Password | API Key | Encrypted storage. The Mailgun API key |
+| `domain_name` | Data | Domain Name | e.g., `mg.yourdomain.com` |
+| `cb_1` | Column Break | | |
+| `region` | Select | Region | Options: `US\nEU`. Default: `US` |
+| `api_url` | Data | API URL (read-only) | Auto-computed from region |
+| `sb_options` | Section Break | Options | |
+| `log_emails` | Check | Log Sent Emails | Log each send to Error Log for debugging |
+| `raise_on_failure` | Check | Raise Exception on Failure | If unchecked, silently log failures |
+
+**`mailgun_settings.json`** (DocType definition):
+```json
+{
+    "name": "Mailgun Settings",
+    "doctype": "DocType",
+    "module": "Frappe Mailgun",
+    "issingle": 1,
+    "document_type": "Setup",
+    "fields": [
+        {
+            "fieldname": "enabled",
+            "fieldtype": "Check",
+            "label": "Enabled",
+            "default": "0"
+        },
+        {
+            "fieldname": "sb_credentials",
+            "fieldtype": "Section Break",
+            "label": "Credentials"
+        },
+        {
+            "fieldname": "api_key",
+            "fieldtype": "Password",
+            "label": "API Key",
+            "mandatory_depends_on": "eval: doc.enabled"
+        },
+        {
+            "fieldname": "domain_name",
+            "fieldtype": "Data",
+            "label": "Domain Name",
+            "description": "Your verified Mailgun sending domain (e.g., mg.yourdomain.com)",
+            "mandatory_depends_on": "eval: doc.enabled"
+        },
+        {
+            "fieldname": "cb_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "region",
+            "fieldtype": "Select",
+            "label": "Region",
+            "options": "US\nEU",
+            "default": "US"
+        },
+        {
+            "fieldname": "api_url",
+            "fieldtype": "Data",
+            "label": "API URL",
+            "read_only": 1,
+            "description": "Auto-set based on region"
+        },
+        {
+            "fieldname": "sb_options",
+            "fieldtype": "Section Break",
+            "label": "Options"
+        },
+        {
+            "fieldname": "log_emails",
+            "fieldtype": "Check",
+            "label": "Log Sent Emails",
+            "default": "0"
+        },
+        {
+            "fieldname": "raise_on_failure",
+            "fieldtype": "Check",
+            "label": "Raise Exception on Failure",
+            "default": "1",
+            "description": "If unchecked, failures are logged silently and the email is marked as sent"
+        }
+    ],
+    "permissions": [
+        {
+            "role": "System Manager",
+            "read": 1,
+            "write": 1,
+            "create": 1
+        }
+    ]
+}
+```
+
+**`mailgun_settings.py`** (Controller):
+```python
+import frappe
+from frappe.model.document import Document
+
+API_URLS = {
+    "US": "https://api.mailgun.net",
+    "EU": "https://api.eu.mailgun.net",
+}
+
+
+class MailgunSettings(Document):
+    def validate(self):
+        self.api_url = API_URLS.get(self.region, API_URLS["US"])
+
+    @staticmethod
+    def get_settings():
+        """Return cached Mailgun settings."""
+        return frappe.get_cached_doc("Mailgun Settings")
+```
+
+### Step 3: Build the Mailgun Client
+
+**`mailgun.py`** — Core sending logic:
+
+```python
+import frappe
+import requests
+from frappe import _
+
+
+def send_via_mailgun(email_queue_doc, sender, recipient, message):
+    """
+    Hook function for override_email_send.
+
+    Called by Frappe's email queue for every outgoing email.
+    Sends the pre-built MIME message via Mailgun's HTTP API.
+
+    Args:
+        email_queue_doc: EmailQueue document instance
+        sender: str - Sender email (e.g., "Name <email@domain.com>")
+        recipient: str - Single recipient email address
+        message: bytes - Complete MIME message
+    """
+    settings = frappe.get_cached_doc("Mailgun Settings")
+
+    if not settings.enabled:
+        # Mailgun not enabled — fall through to default SMTP behavior.
+        # NOTE: Since this is override_email_send, returning without raising
+        # means the email will be marked as sent. If Mailgun is disabled,
+        # we should raise so Frappe falls back. But the hook doesn't support
+        # fallback — if the hook exists, SMTP is skipped entirely.
+        # So if disabled, we must still send somehow or raise an error.
+        frappe.throw(
+            _("Mailgun is not enabled. Please enable it in Mailgun Settings or remove the app."),
+            title=_("Mailgun Disabled"),
+        )
+
+    api_key = settings.get_password("api_key")
+    domain = settings.domain_name
+    api_url = settings.api_url or "https://api.mailgun.net"
+
+    if not api_key or not domain:
+        frappe.throw(
+            _("Mailgun API Key and Domain are required. Configure in Mailgun Settings."),
+            title=_("Mailgun Configuration Error"),
+        )
+
+    # Ensure message is bytes
+    if isinstance(message, str):
+        message = message.encode("utf-8")
+
+    url = f"{api_url}/v3/{domain}/messages.mime"
+
+    try:
+        response = requests.post(
+            url,
+            auth=("api", api_key),
+            data={"to": recipient},
+            files={"message": ("message.mime", message, "message/rfc822")},
+            timeout=30,
+        )
+
+        if settings.log_emails:
+            frappe.log_error(
+                title=f"Mailgun: Sent to {recipient}",
+                message=(
+                    f"Status: {response.status_code}\n"
+                    f"Sender: {sender}\n"
+                    f"Recipient: {recipient}\n"
+                    f"Queue: {email_queue_doc.name}\n"
+                    f"Response: {response.text}"
+                ),
+                reference_doctype="Email Queue",
+                reference_name=email_queue_doc.name,
+            )
+
+        if response.status_code == 200:
+            return  # Success — Frappe will mark as Sent
+
+        # Handle specific error codes
+        if response.status_code == 401:
+            error_msg = _("Mailgun authentication failed. Check your API key.")
+        elif response.status_code == 404:
+            error_msg = _("Mailgun domain '{0}' not found. Check domain name and region.").format(domain)
+        elif response.status_code == 429:
+            error_msg = _("Mailgun rate limit exceeded. Email will be retried.")
+        else:
+            error_msg = _("Mailgun API error {0}: {1}").format(response.status_code, response.text)
+
+        frappe.log_error(
+            title=f"Mailgun Send Failed ({response.status_code})",
+            message=error_msg,
+            reference_doctype="Email Queue",
+            reference_name=email_queue_doc.name,
+        )
+
+        if settings.raise_on_failure:
+            frappe.throw(error_msg, title=_("Mailgun Error"))
+
+    except requests.exceptions.Timeout:
+        frappe.log_error(
+            title="Mailgun Timeout",
+            message=f"Request to Mailgun timed out for {recipient}",
+            reference_doctype="Email Queue",
+            reference_name=email_queue_doc.name,
+        )
+        if settings.raise_on_failure:
+            frappe.throw(_("Mailgun request timed out. Email will be retried."))
+
+    except requests.exceptions.ConnectionError:
+        frappe.log_error(
+            title="Mailgun Connection Error",
+            message=f"Could not connect to Mailgun API for {recipient}",
+            reference_doctype="Email Queue",
+            reference_name=email_queue_doc.name,
+        )
+        if settings.raise_on_failure:
+            frappe.throw(_("Could not connect to Mailgun API. Check network."))
+
+    except Exception:
+        frappe.log_error(
+            title="Mailgun Unknown Error",
+            reference_doctype="Email Queue",
+            reference_name=email_queue_doc.name,
+        )
+        if settings.raise_on_failure:
+            raise
+```
+
+### Step 4: Register the Hook
+
+**`hooks.py`**:
+
+```python
+app_name = "frappe_mailgun"
+app_title = "Frappe Mailgun"
+app_publisher = "Your Name"
+app_description = "Send emails via Mailgun HTTP API, bypassing SMTP port restrictions"
+app_email = "your@email.com"
+app_license = "MIT"
+
+# This is the critical line — intercepts ALL outgoing emails
+override_email_send = "frappe_mailgun.mailgun.send_via_mailgun"
+```
+
+That single line is all it takes. When Frappe processes the email queue, it calls `get_hook_method("override_email_send")`, finds our function, and routes all emails through Mailgun.
+
+### Step 5: Configure Mailgun Settings
+
+After installing the app:
+
+1. Go to **Mailgun Settings** in your Frappe site
+2. Check **Enabled**
+3. Enter your **API Key** (from Mailgun Dashboard > Account Settings > API Keys)
+4. Enter your **Domain Name** (e.g., `mg.yourdomain.com`)
+5. Select **Region** (US or EU, matching where your Mailgun domain is provisioned)
+6. Save
+
+### Step 6: Configure Email Account (Simplified)
+
+Since all emails now go through Mailgun HTTP API, the Email Account SMTP settings become irrelevant for sending. But you still need an Email Account configured:
+
+| Field | Value |
+|-------|-------|
+| **Email ID** | `notifications@yourdomain.com` |
+| **Enable Outgoing** | ✓ |
+| **SMTP Server** | *(any value — it won't be used)* |
+| **SMTP Port** | *(any value — it won't be used)* |
+| **No SMTP Authentication** | ✓ |
+
+The Email Account is still needed because Frappe requires one to queue emails, but SMTP is never contacted — the hook intercepts before that point.
+
+### Important Considerations
+
+#### 1. The Hook is All-or-Nothing
+
+The `override_email_send` hook replaces **all** email sending. There is no per-account or per-service selection. When the hook is registered:
+- ALL emails go through the hook function
+- SMTP is NEVER used (not even for non-Mailgun accounts)
+- Frappe Mail service is also bypassed
+
+If you need some emails to go through SMTP and others through Mailgun, you'd need to add conditional logic inside the hook function:
+
+```python
+def send_via_mailgun(email_queue_doc, sender, recipient, message):
+    settings = frappe.get_cached_doc("Mailgun Settings")
+
+    if not settings.enabled:
+        # Can't fall back to SMTP from inside the hook!
+        # The hook's existence prevents SMTP from being called.
+        # Option: Use smtplib directly as a fallback
+        _send_via_smtp_fallback(email_queue_doc, sender, recipient, message)
+        return
+
+    # ... Mailgun logic ...
+```
+
+#### 2. Error Handling and Retries
+
+When the hook function **raises an exception**:
+- The `SendMailContext.__exit__` catches it
+- The email status is set to "Not Sent" (or "Partially Sent" if some recipients succeeded)
+- The `retry` counter is incremented
+- After `get_email_retry_limit()` failures, status becomes "Error"
+
+This means: if Mailgun returns a 5xx error and you raise, Frappe will automatically retry the email later. This is the desired behavior.
+
+#### 3. Sender Domain Must Match Mailgun Domain
+
+Mailgun requires the sender's domain to match your verified sending domain. If your Frappe Email Account uses `noreply@company.com`, your Mailgun domain must be `company.com` (or a subdomain like `mg.company.com` with appropriate DNS setup).
+
+#### 4. DNS Configuration for Mailgun
+
+Even though we're using HTTP API (not SMTP), Mailgun still requires DNS records for email deliverability:
+- **SPF record**: Authorizes Mailgun to send on behalf of your domain
+- **DKIM records**: Cryptographic signatures for authentication
+- **MX records** (optional): Only needed if receiving email via Mailgun
+
+#### 5. Message Size Limit
+
+Mailgun's maximum message size is 25MB. Frappe's Email Account has an `attachment_limit` field — ensure it's set below 25MB.
+
+### Testing
+
+```python
+# In bench console
+import frappe
+
+# Test that the hook is registered
+from frappe.utils import get_hook_method
+method = get_hook_method("override_email_send")
+print(method)  # Should print: <function send_via_mailgun at 0x...>
+
+# Test sending
+frappe.sendmail(
+    recipients=["test@example.com"],
+    subject="Test via Mailgun",
+    message="This email was sent via Mailgun HTTP API!",
+)
+```
+
+### Complete File Listing
+
+#### `hooks.py`
+```python
+app_name = "frappe_mailgun"
+app_title = "Frappe Mailgun"
+app_publisher = "Your Name"
+app_description = "Send emails via Mailgun HTTP API, bypassing SMTP port restrictions"
+app_email = "your@email.com"
+app_license = "MIT"
+
+override_email_send = "frappe_mailgun.mailgun.send_via_mailgun"
+```
+
+#### `mailgun.py`
+```python
+import frappe
+import requests
+from frappe import _
+
+
+def send_via_mailgun(email_queue_doc, sender, recipient, message):
+    settings = frappe.get_cached_doc("Mailgun Settings")
+
+    if not settings.enabled:
+        frappe.throw(
+            _("Mailgun is not enabled. Configure in Mailgun Settings."),
+            title=_("Mailgun Disabled"),
+        )
+
+    api_key = settings.get_password("api_key")
+    domain = settings.domain_name
+    api_url = settings.api_url or "https://api.mailgun.net"
+
+    if isinstance(message, str):
+        message = message.encode("utf-8")
+
+    response = requests.post(
+        f"{api_url}/v3/{domain}/messages.mime",
+        auth=("api", api_key),
+        data={"to": recipient},
+        files={"message": ("message.mime", message, "message/rfc822")},
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        frappe.log_error(
+            title=f"Mailgun Error ({response.status_code})",
+            message=f"Recipient: {recipient}\nResponse: {response.text}",
+            reference_doctype="Email Queue",
+            reference_name=email_queue_doc.name,
+        )
+        frappe.throw(
+            _("Mailgun API error {0}: {1}").format(response.status_code, response.text),
+            title=_("Mailgun Error"),
+        )
+```
+
+#### `mailgun_settings.py`
+```python
+import frappe
+from frappe.model.document import Document
+
+API_URLS = {
+    "US": "https://api.mailgun.net",
+    "EU": "https://api.eu.mailgun.net",
+}
+
+
+class MailgunSettings(Document):
+    def validate(self):
+        self.api_url = API_URLS.get(self.region, API_URLS["US"])
+```
+
+### Summary: Why This Works
+
+| Concern | Solution |
+|---------|----------|
+| SMTP ports blocked | Mailgun HTTP API uses port 443 (HTTPS) |
+| Complex integration needed? | No — single hook function, ~30 lines of core logic |
+| Frappe MIME message reused? | Yes — passed directly to Mailgun's `/messages.mime` |
+| Attachments preserved? | Yes — they're part of the MIME message |
+| Email tracking preserved? | Yes — Frappe's tracking pixels are in the MIME |
+| Unsubscribe links preserved? | Yes — already in the MIME headers/body |
+| Error handling? | Raise exception → Frappe retries automatically |
+| Configuration? | Single Settings doctype: API key + domain + region |
 
 ---
 
