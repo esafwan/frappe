@@ -1433,95 +1433,633 @@ The engine should support:
 
 ## 18. UI / UX Plan for the Rules App
 
-The UI should be ambitious but still realistic for Frappe.
+The UI should be ambitious but still realistic for Frappe. The right target is **a modern admin builder on top of standard Frappe Form, List, Dialog, Grid, Sidebar, and Workspace patterns**, not a completely custom frontend that fights the framework.
 
-## 18.1 Rule creation flow
+The ideal experience should make three things obvious at all times:
 
-1. User opens `Rule`.
-2. Selects an **Event Type**.
-3. UI loads the event's context schema and relevant scope selectors.
-4. User builds conditions using structured rows/groups.
-5. User adds one or more actions.
-6. UI validates required parameters.
-7. User can **Test**, **Save Draft**, or **Publish**.
+1. **what event will trigger the rule**,
+2. **what data is available in context**,
+3. **what the rule will do if it matches**.
 
-## 18.2 Event selection UX
+## 18.1 Core UX principles
 
-For document events, the form should ask for:
+### Progressive disclosure
 
-- target DocType,
-- event phase,
-- optional docstatus or workflow-state narrowing.
+The form should start simple for common cases and only reveal advanced controls when the user opts in. For example:
 
-For scheduled events, the form should ask for:
+- basic rule authors see event, conditions, actions, and enable/publish controls,
+- advanced users can expand sections for async execution, idempotency, recursion prevention, logging verbosity, and provider-specific tuning.
 
-- schedule expression,
-- optional target DocType/query source.
+### Strong type guidance
 
-## 18.3 Condition builder UX
+The UI should know the selected event, DocType, and field metadata, and use that to constrain choices. The system should prefer guided builders over generic text areas.
 
-Avoid freeform Python by default.
+### Immediate feedback
 
-Provide a builder like:
+The user should see live summaries such as:
 
-- left operand picker from context variables,
-- operator picker scoped by data type,
-- right operand literal/reference input,
-- condition groups with AND/OR.
+- “Runs when **Sales Invoice** is **submitted**.”
+- “Matches if **grand_total > 10000** and **customer_group = Enterprise**.”
+- “Then **assigns** the document, **adds a comment**, and **queues a notification**.”
 
-Advanced mode can expose an expression field, but results should still be previewable.
+### Safe authoring
 
-## 18.4 Action configuration UX
+Publishing a rule should feel like deploying automation, not just saving a form. Draft/test/publish states should be very visible.
 
-Each action row should dynamically render parameter fields based on its definition schema.
+## 18.2 Primary screens
+
+## 18.2.1 Rules List / Workspace screen
+
+This is the landing page for admins.
+
+### Main layout
+
+- top summary cards:
+  - Total Rules
+  - Enabled Rules
+  - Draft Rules
+  - Failed Executions (24h)
+  - Rules with Warnings
+- filter bar:
+  - App
+  - Module
+  - Event Type
+  - Scope DocType
+  - Status
+  - Execution Mode
+  - Last Triggered date range
+- list columns:
+  - Rule Name
+  - Status
+  - Event
+  - Scope
+  - Priority
+  - Execution Mode
+  - Last Published By
+  - Last Triggered On
+  - Last Result
+
+### Row behaviors
+
+Each row should expose quick actions:
+
+- Enable / Disable
+- Duplicate
+- Run Test
+- View Logs
+- Export JSON
+
+### Smart helpers
+
+- Show warning badges such as `Draft newer than published version`.
+- Show a chip like `Uses scripted condition` for higher-risk rules.
+- Show `Potential overlap` if two enabled rules share the same event, DocType, and similar priority range.
+
+## 18.2.2 Rule Builder screen
+
+This should be the primary authoring screen and can be implemented as a regular Frappe Form with a richer custom layout.
+
+### Recommended screen regions
+
+```mermaid
+flowchart LR
+    A[Header: status, publish, test, duplicate] --> B[Main canvas]
+    B --> C[Left: step navigation]
+    B --> D[Center: event + conditions + actions]
+    B --> E[Right: live summary + context explorer + warnings]
+```
+
+### Header actions
+
+- `Save Draft`
+- `Validate`
+- `Test Rule`
+- `Publish`
+- `Disable`
+- `View Logs`
+- `Duplicate`
+
+### Header state indicators
+
+- Draft / Published / Disabled / Test
+- version number
+- last published timestamp
+- “has unpublished changes” badge
+
+### Left step navigator
+
+A sticky section menu improves long-form usability:
+
+1. Overview
+2. Event
+3. Conditions
+4. Actions
+5. Execution
+6. Test
+7. Logs
+
+This is more usable than a single long scrolling form, especially when actions become numerous.
+
+## 18.2.3 Execution Log screen
+
+The log screen should feel like a debugging console, not a generic list.
+
+### List view fields
+
+- Rule
+- Event Key
+- Reference DocType / Name
+- Status
+- Matched
+- Started At
+- Duration
+- Triggered By
+- Execution Mode
+- Retry Count
+
+### Log detail form sections
+
+- execution summary
+- trigger metadata
+- evaluated conditions
+- executed actions
+- warnings/errors
+- context snapshot
+- linked jobs / retries
+
+### Debugging actions
+
+- Retry async execution
+- Re-run as dry-run
+- Open reference document
+- Copy context JSON
+
+## 18.3 Rule Builder: screen-by-screen behavior
+
+## 18.3.1 Overview screen
+
+This is the top section of the Rule form and should collect the most important metadata.
+
+### Fields
+
+- `Rule Name`
+- `Description`
+- `App`
+- `Module`
+- `Tags`
+- `Status`
+- `Priority`
+- `Execution Mode`
+- `Owner Team` (optional)
+- `Change Note` (shown on publish)
+
+### Smart behavior
+
+- `Rule Name` can auto-suggest from event + main action, e.g. `Assign high-value Sales Invoice on submit`.
+- `Module` can auto-fill from selected scope DocType's module, with manual override.
+- `Priority` can default based on status and event scope, e.g. `10` for user-created rules, higher values reserved for core/system rules.
+- A helper summary should update live under the title: `Document Event → Sales Invoice / on_submit → 2 conditions → 3 actions`.
+
+## 18.3.2 Event screen
+
+This is where the rule becomes specific and data-aware.
+
+### Event selector fields
+
+- `Event Family`
+  - Document Lifecycle
+  - Scheduled
+  - Custom App Event
+  - Manual Trigger / Utility
+- `Event Type`
+  - dynamically filtered by family
+- `Scope DocType`
+  - required for doc events
+- `Event Phase`
+  - e.g. After Insert / On Update / On Submit / On Cancel / On Update After Submit
+- `Subfilters`
+  - optional workflow state
+  - docstatus filter
+  - “only when fields changed” list
+  - “only when source is API / UI / email / import” if context supports it
+
+### Data-dependent auto fill
+
+When the user selects `Document Lifecycle`:
+
+- show `Scope DocType`,
+- auto-load that DocType's field metadata,
+- auto-populate context variables such as `doc.<fieldname>`, `old_doc.<fieldname>`, `meta.<fieldname>`, `owner`, `docstatus`, `_assign`.
+
+When the user selects `Scheduled`:
+
+- hide DocType event-phase controls,
+- show schedule expression controls,
+- suggest presets such as:
+  - Every 15 minutes
+  - Hourly
+  - Daily at 09:00
+  - Weekdays at 09:00
+
+When the user selects a DocType with workflow enabled:
+
+- auto-suggest workflow-state-related filters,
+- show a helper pill: `Workflow detected: Approval State available in conditions`.
+
+### Screen helpers
+
+- context preview panel listing fields grouped by:
+  - document fields,
+  - previous values,
+  - user/session metadata,
+  - provider-specific extras.
+- “field change” helper that lets the user choose from actual DocType fields instead of typing names manually.
+
+## 18.3.3 Conditions screen
+
+This is where modern UX matters most.
+
+### Layout model
+
+Conditions should be shown as nested cards/groups rather than plain rows.
+
+Example:
+
+- Group 1 (`ALL`)
+  - `grand_total` `>` `10000`
+  - `customer_group` `=` `Enterprise`
+- Group 2 (`ANY`)
+  - `territory` `=` `US`
+  - `territory` `=` `Canada`
+
+### Condition row fields
+
+- `Context Variable`
+- `Operator`
+- `Value Type`
+  - Literal
+  - Context Variable
+  - Template
+  - Scripted Expression (advanced)
+- `Value`
+- `Description / note`
+- `Enabled`
+
+### Auto-populating behavior
+
+When the user picks a context variable:
+
+- operator choices narrow by type:
+  - text fields: equals, contains, starts with, regex (advanced)
+  - number/currency: =, !=, >, <, >=, <=, between
+  - date/datetime: before, after, between, within next N days
+  - check fields: is true / is false
+  - link fields: equals, in list, changed to, changed from
+- value widget changes automatically:
+  - checkbox for boolean
+  - numeric box for numeric
+  - date picker for date
+  - link field when comparing to a linked DocType
+
+### Suggestions and helpers
+
+- When the user selects a commonly used field like `docstatus`, offer suggested predicates:
+  - `docstatus = Submitted`
+  - `docstatus changed to Submitted`
+- When the user selects a status field, show current options from metadata as clickable chips.
+- When a field is marked `reqd`, suggest `is set` instead of making the user type null checks.
+- For string comparisons, optionally suggest values from recent records or DocField `options`.
+
+### Advanced helpers
+
+- `Add common condition` menu with presets such as:
+  - field changed
+  - field became empty
+  - field became non-empty
+  - document newly submitted
+  - assignment exists / no assignment exists
+- “Convert to advanced expression” action for power users.
+- “Explain this condition” helper that renders a human-readable sentence.
+
+## 18.3.4 Actions screen
+
+Actions should be modeled as ordered cards with clear summaries and inline validation.
+
+### Action list controls
+
+- Add Action
+- Reorder by drag handle
+- Duplicate action
+- Disable action
+- Group actions into phases (optional future enhancement)
+
+### Action card structure
+
+Each card should show:
+
+- action type badge
+- one-line summary
+- sync/async behavior chip
+- warning/error badge if config incomplete
+
+### Assign Document action: detailed UX
+
+This is especially important because it is the successor path for Assignment Rule.
+
+#### Fields
+
+- `Assignment Mode`
+  - Explicit Users
+  - User From Field
+  - User Group
+  - Role Pool
+  - Provider / Scripted Selector (advanced)
+- `Distribution Strategy`
+  - Round Robin
+  - Least Open Assignments
+  - First Matching
+  - All Matching
+- `Candidate Users`
+- `User Source Field`
+- `Fallback User`
+- `Fallback Action`
+  - Skip
+  - Raise warning
+  - Use fallback user
+- `Due Date Source`
+- `Priority`
+- `Description Template`
+- `Notify Assignee`
+- `Auto Share If Needed`
+- `Follow Document`
+- `Reassign Existing Assignment`
+
+#### Data-dependent auto fill
+
+- If `Assignment Mode = User From Field`, show only user-compatible fields from the selected DocType and pre-suggest:
+  - `owner`
+  - `modified_by` when relevant
+  - all `Link -> User` fields
+- If the DocType has date/datetime fields, auto-suggest the nearest deadline-looking fields for `Due Date Source`, prioritizing names like:
+  - `due_date`
+  - `posting_date`
+  - `delivery_date`
+  - `deadline`
+- If the rule event is `on_submit`, the description template helper can suggest: `Review {{ doc.name }} submitted by {{ doc.owner }}`.
+- If the user picks `Least Open Assignments`, the UI can surface a workload preview for selected candidates based on current counts.
+
+#### Inline helpers
+
+- show a live preview of the rendered assignment description,
+- show a preview list of candidate users,
+- show a note when any selected user is disabled,
+- show `This action may share the document with assignees who lack access` when auto-share is enabled.
+
+### Update Field action: detailed UX
+
+#### Fields
+
+- `Target DocType`
+  - Usually current document, but future-safe for linked docs
+- `Target Field`
+- `Update Mode`
+  - Set value
+  - Clear value
+  - Increment
+  - Append child row
+- `Value Source`
+  - Literal
+  - Context variable
+  - Template
+  - Function/provider
+- `Value`
+
+#### Auto behavior
+
+- selecting `Target Field` should switch input control based on fieldtype,
+- if the field is a `Select`, values should come from defined options,
+- if the field is a `Link`, the input should become a link autocomplete,
+- if the field is read-only at metadata level, show a warning and require explicit override permission/config.
+
+### Create Document action: detailed UX
+
+#### Fields
+
+- `Target DocType`
+- `Insert Permissions Mode`
+- `Field Mapping` grid
+  - target field
+  - source type
+  - source value
+- `Prevent Duplicates Using`
+  - optional fingerprint or unique key template
+- `Return created doc into context`
+
+#### Auto behavior
+
+- once `Target DocType` is selected, populate mapping rows with common suggestions:
+  - title-like fields from source title/subject
+  - owner/assigned fields from current actor
+  - link-back field to source document if available
+- highlight required target fields not yet mapped.
+
+## 18.3.5 Execution screen
+
+This is an advanced settings screen, but still essential.
+
+### Fields
+
+- `Execution Mode`
+- `Queue / Job Priority`
+- `Stop On First Error`
+- `Retry Policy`
+- `Idempotency Strategy`
+- `Recursion Prevention`
+- `Log Level`
+- `Context Snapshot Policy`
+  - none
+  - metadata only
+  - sanitized partial snapshot
+
+### Helpers
+
+- auto-recommend async mode when actions include webhooks, emails, or heavy external IO,
+- auto-warn when sync mode includes more than N actions or expensive providers,
+- show a helper sentence: `This rule may re-trigger itself if it updates Sales Invoice.status`.
+
+## 18.3.6 Test screen
+
+This should be a first-class screen, not a tiny button.
+
+### Test input modes
+
+- `Select Existing Document`
+- `Use Last Triggered Context`
+- `Paste Sample Context JSON`
+
+### Test result panes
+
+- event context summary
+- conditions table:
+  - condition
+  - evaluated value(s)
+  - result
+- actions table:
+  - action summary
+  - would run / skipped
+  - rendered templates
+  - warnings
+- final simulation summary
+
+### Smart behavior
+
+- when testing against an existing document, auto-load actual current field values,
+- allow toggling between current values and previous values if change-sensitive conditions exist,
+- preserve last test input per rule draft.
+
+## 18.3.7 Logs screen
+
+This screen should sit inside the Rule form as an embedded dashboard plus a link to the full log list.
+
+### Embedded widgets
+
+- last 10 executions
+- failure rate trend
+- average duration
+- most common warning
+- top documents affected
+
+### Convenience actions
+
+- filter logs to current rule version only,
+- compare last successful run vs last failed run,
+- open the exact published version used for a failed execution.
+
+## 18.4 Form behaviors, helpers, and autofill patterns
+
+## 18.4.1 Auto-generated rule summary
+
+A sticky live summary card on the right side should always render a natural-language explanation such as:
+
+> When **Expense Claim** is **submitted**, if **total_claimed_amount > 5000** and **department = Finance**, then **assign to Finance Reviewers** using **round robin** and **add a comment**.
+
+This improves confidence and catches configuration mistakes early.
+
+## 18.4.2 Metadata-aware suggestions
+
+The UI should proactively suggest likely-good defaults using metadata and naming conventions.
 
 Examples:
 
-- **Assign document** → assignee mode, user list, due date source, description template, strategy.
-- **Update field** → target field, value source, update mode.
-- **Create document** → target DocType, field mapping rows.
+- due date source suggestions from fields named like `due_date`, `deadline`, `posting_date`, `follow_up_on`
+- assignee field suggestions from `owner`, `approver`, `assigned_to`, `user`, and `Link -> User` fields
+- status condition suggestions from `status`, workflow state, and docstatus
+- field-change suggestions from the event phase and doc metadata
 
-## 18.5 Visual builder question
+## 18.4.3 Empty-state helpers
 
-A BPMN-style canvas is attractive but should not be required for MVP.
+For new users, every major section should have “Start with a template” options.
 
-Recommendation:
+Examples:
 
-- v1: form/list-based builder with condition groups and ordered actions,
-- later: optional graph modeller for advanced flows.
+- Assign on submit
+- Escalate when overdue
+- Add comment when status changes
+- Create follow-up document when workflow is approved
 
-## 18.6 Validation UX
+Selecting a template should prefill event, common conditions, and one or more starter actions.
 
-Before publish, UI should run:
+## 18.4.4 Inline warnings
 
-- condition schema validation,
-- action parameter validation,
-- extension/provider availability checks,
-- sample context resolution checks where possible.
+The UI should warn early for common risks:
 
-## 18.7 Test / dry-run UX
+- no actions configured,
+- all conditions disabled,
+- async rule uses non-idempotent actions without idempotency config,
+- assigning to disabled or empty user sources,
+- overlapping enabled rules on the same event and DocType,
+- using scripted expressions when structured conditions could replace them.
 
-This is high value and very feasible.
+## 18.4.5 Publish guardrails
 
-Proposed feature:
+On publish:
 
-- choose a sample document or paste a sample event payload,
-- run conditions without side effects, or run actions in dry-run mode when supported,
-- show:
-  - matched conditions,
-  - would-run actions,
-  - rendered templates,
-  - warnings.
+- run full validation,
+- show a confirmation modal summarizing affected event and actions,
+- highlight breaking changes from last published version,
+- optionally require a change note.
 
-## 18.8 Log and debugging UX
+For risky changes, the modal can say:
 
-`Rule Execution Log` list and form should support:
+- `This rule affects Sales Invoice on submit.`
+- `It can share documents with assignees.`
+- `It contains 2 scripted expressions.`
+- `It overlaps with 1 enabled rule of equal priority.`
 
-- filter by rule, status, doctype, document, date range,
-- view evaluated conditions and action outcomes,
-- inspect sanitized context snapshot,
-- retry async failures when safe,
-- open linked reference document.
+## 18.5 Recommended v1 vs later UI scope
+
+### v1 UI scope
+
+- modern Rule form with step navigation
+- metadata-aware event selector
+- structured condition builder
+- ordered action cards
+- test screen
+- embedded logs panel
+- live natural-language summary
+- templates for common rule patterns
+
+### Later UI scope
+
+- graph/canvas builder
+- richer timeline visualization of action chains
+- multi-rule impact analysis
+- rule conflict visualizer
+- version diff viewer with structured field/action diffs
+- reusable packaged templates marketplace
+
+## 18.6 Why this UI is Frappe-realistic
+
+This proposal deliberately stays within patterns Frappe already supports well:
+
+- standard DocType-backed forms,
+- dynamic field properties,
+- custom form sections and dashboards,
+- child tables/grids,
+- sidebar summaries,
+- dialogs for test/publish flows,
+- list views and workspace dashboards.
+
+The result should feel like a polished Frappe app, not a foreign embedded builder.
+
+## 18.7 Example screen flow for a common rule
+
+Example: “Assign high-value Sales Invoice submissions to Finance reviewers.”
+
+1. Open `New Rule`.
+2. Template suggestions appear; user clicks `Assign on submit`.
+3. UI auto-fills:
+   - Event Family = Document Lifecycle
+   - Event Phase = On Submit
+   - one starter Assign Document action
+4. User selects `Scope DocType = Sales Invoice`.
+5. UI auto-loads fields and suggests conditions:
+   - `docstatus = Submitted`
+   - `grand_total > ...`
+6. User adds condition `grand_total > 10000`.
+7. User chooses Assign Document action:
+   - Assignment Mode = Explicit Users
+   - Strategy = Least Open Assignments
+8. UI suggests due date source `due_date` if present; otherwise leaves empty.
+9. UI shows workload preview for selected Finance reviewers.
+10. User clicks `Test Rule` with an existing invoice.
+11. Test screen shows:
+    - conditions matched,
+    - chosen assignee preview,
+    - rendered assignment text.
+12. User publishes the rule.
+
+That is the level of polish and guidance the new Rules app should aim for.
 
 ---
 
