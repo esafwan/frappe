@@ -465,14 +465,14 @@ def validate_link_and_fetch(
 	)
 
 	if not search_result:
-		return {}  # does not exist or filtered out
+		return {}  # Either the record does not exist or was excluded by link_filters
 
 	values = None
 	is_virtual_dt = bool(meta.get("is_virtual"))
 	if is_virtual_dt:
 		try:
 			doc = frappe.get_doc(doctype, docname)
-			doc.check_permission("select" if frappe.only_has_select_perm(doctype) else "read")
+			doc.check_permission("select")
 			values = {"name": doc.name}
 
 		except frappe.DoesNotExistError:

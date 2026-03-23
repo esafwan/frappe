@@ -912,7 +912,14 @@ frappe.views.QueryReport = class QueryReport extends frappe.views.BaseList {
 			Edit: {
 				label: __("Edit"),
 				click: () => {
-					frappe.set_route(frappe.get_route());
+					this.prepared_report_name = null;
+					Object.values(this.filters).forEach((field) => {
+						if (field.input) {
+							field.df.read_only = false;
+							field.refresh();
+						}
+					});
+					this.add_prepared_report_buttons(this.prepared_report_document);
 				},
 			},
 			Rebuild: {
@@ -2264,8 +2271,8 @@ frappe.views.QueryReport = class QueryReport extends frappe.views.BaseList {
 		if (this.tree_report) {
 			this.$tree_footer = $(`<div class="tree-footer col-md-3">
 				<div class="input-group">
-				  <input id="tree-level" type="number" class="form-control" aria-label="Tree Level" value="2">
-					<button class="btn btn-xs btn-secondary" data-action="set_tree_level">
+				  <input id="tree-level" type="number" class="form-control" style="width: 60px; border-right: 1px solid var(--border-color);" aria-label="Tree Level" value="2">
+					<button class="btn btn-xs btn-secondary" style="border-top-left-radius: 0px; border-bottom-left-radius: 0px;" data-action="set_tree_level">
 						${__("Set Level")}</button>
 					<button class="btn btn-xs btn-secondary" data-action="expand_all_rows">
 						${__("Expand All")}</button>
