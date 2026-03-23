@@ -1,0 +1,43 @@
+{
+  "doctypes": [
+    {
+      "doctype": "Report",
+      "json": "frappe/core/doctype/report/report.json",
+      "python": "frappe/core/doctype/report/report.py",
+      "table": "tabReport"
+    },
+    {
+      "doctype": "Report Filter",
+      "json": "frappe/core/doctype/report_filter/report_filter.json",
+      "table": "tabReport Filter"
+    },
+    {
+      "doctype": "Report Column",
+      "json": "frappe/core/doctype/report_column/report_column.json",
+      "table": "tabReport Column"
+    },
+    {
+      "doctype": "Prepared Report",
+      "json": "frappe/core/doctype/prepared_report/prepared_report.json",
+      "python": "frappe/core/doctype/prepared_report/prepared_report.py",
+      "table": "tabPrepared Report"
+    },
+    {
+      "doctype": "Dashboard Chart",
+      "json": "frappe/desk/doctype/dashboard_chart/dashboard_chart.json",
+      "python": "frappe/desk/doctype/dashboard_chart/dashboard_chart.py",
+      "table": "tabDashboard Chart"
+    },
+    {
+      "doctype": "Dashboard Chart Field",
+      "json": "frappe/desk/doctype/dashboard_chart_field/dashboard_chart_field.json",
+      "table": "tabDashboard Chart Field"
+    },
+    {
+      "doctype": "Dashboard Chart Source",
+      "json": "frappe/desk/doctype/dashboard_chart_source/dashboard_chart_source.json",
+      "python": "frappe/desk/doctype/dashboard_chart_source/dashboard_chart_source.py",
+      "table": "tabDashboard Chart Source"
+    }
+  ]
+}
