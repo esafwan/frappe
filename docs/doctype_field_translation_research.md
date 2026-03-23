@@ -82,6 +82,33 @@ Frappe resolves the active request language through `frappe.translate.get_langua
 
 For authenticated sessions, `frappe.local.lang` is initialized during auth/session bootstrap and then used by translation helpers.
 
+#### D. What the frontend and API actually do with `translatable` today
+
+This is the critical detail for the React-app question. In current Frappe, the existence of `df.translatable = 1` does **not** mean generic data APIs will return translated field values. The property is exposed as metadata, but standard record reads do not automatically act on it.
+
+Current behavior is split across three frontend/API patterns:
+
+1. **Metadata exposure only**
+   - DocField metadata synced to the client includes `translatable`, so frontend code can inspect it.
+   - This means a Desk page, Vue component, or React app can *see* that a field is marked translatable if it loads DocType meta.
+   - However, `frappe.client.get`, `frappe.client.get_value`, `frappe.db.get_doc`, REST `/api/resource`, and normal list reads still return the stored source value.
+
+2. **String-translation UX in Desk**
+   - Form controls show a globe button for `df.translatable` fields.
+   - That button opens `TranslationManager`, which reads/writes rows in the `Translation` DocType keyed by `source_text`.
+   - This is a UI for source-string translation, not document-instance translation. Two records with the same source text still share the same translation key.
+
+3. **Narrow translation-aware rendering paths**
+   - Link controls, list formatting for translated link doctypes, and report export can call `__()` / `_()` on returned values.
+   - These flows depend on translation dictionaries and `translated_doctype`/`translate_values` style flags.
+   - They do not change the underlying API contract for `get_doc`/`get_list`/`get_value`.
+
+Practical consequence for a React app:
+
+- If the React app is calling normal document APIs and expecting `translatable` fields to already be language-resolved, it will not happen automatically.
+- Changing only request params on standard `/api/resource` or `frappe.client.get` calls is not enough today, because there is no general-purpose server-side translation overlay for arbitrary field values in those endpoints.
+- The frontend can use `translatable` as a hint for custom rendering logic, but it would still need a translation-aware API response shape or a second translation lookup source.
+
 ### 4. How standard DocType scaffolding works
 
 DocType scaffolding is tied to saving/exporting standard DocTypes in developer mode.
@@ -129,7 +156,118 @@ The REST read paths also rely on the same raw document/query behavior:
 
 Therefore the REST API inherits the same limitation: it returns stored values, not per-language translated document content.
 
-### 6. Existing interception points and hooks
+### 6. Frontend, Desk, and API implications for `translatable` fields
+
+This section answers the practical question: **if a frontend app is not picking up translated values today, should it change the API call, REST route, or params?**
+
+### A. Desk/frontend behavior in core today
+
+#### DocType meta contains the flag
+
+Client-side meta sync loads full DocField definitions into `frappe.meta`, so the browser can inspect `df.translatable`. This is why the frontend knows enough to show a translation affordance, but not enough to resolve translated content automatically.
+
+#### Form controls use `translatable` for translation management UI
+
+`BaseControl.show_translatable_button()` shows the globe button only when all of the following are true:
+
+- the field has `df.translatable`,
+- the user can write `Translation`,
+- the field has a non-empty value,
+- Desk translation UI is available.
+
+That button launches `TranslationManager`, which reads/writes `Translation` rows by `source_text`. In other words, the built-in form UX treats the field value as a string key into the translation dictionary; it does not persist a translation specific to `{doctype, docname, fieldname}`.
+
+#### Link and list formatting have a separate path
+
+Core frontend code also has special handling for link doctypes marked `translated_doctype`. In those cases, the browser uses `frappe.boot.translated_doctypes` and calls `__()` on link titles/display values. This is again dictionary-based display translation, mainly for master data / link-title presentation, not arbitrary per-record field-value substitution.
+
+### B. API behavior in core today
+
+#### Standard reads do not have a `translatable` response mode
+
+The main APIs used by frontend apps are:
+
+- `frappe.client.get` / `frappe.db.get_doc`
+- `frappe.client.get_value` / `frappe.db.get_value`
+- `frappe.desk.reportview.get_list` / `frappe.db.get_list`
+- REST `/api/resource/<doctype>` and `/api/resource/<doctype>/<name>`
+
+None of these endpoints currently accept a general parameter such as:
+
+- `translate_fields=1`
+- `resolve_translatable=1`
+- `lang=ar` for field-value overlay
+
+that would cause arbitrary `df.translatable` document fields to come back translated.
+
+#### Existing translation-related params are narrow-purpose only
+
+There **is** a `translate_values` parameter in report export and in some autocomplete/link-query flows, but this only controls string translation using translation dictionaries in those narrow flows. It is not a generic REST/data API contract for document retrieval.
+
+### C. What this means for a React app
+
+If the React app is calling standard APIs, there are only three realistic explanations for "not picking it up":
+
+1. the app is receiving meta where `translatable` is visible, but the backend still returns raw source values;
+2. the app is using REST/`frappe.client.get`/`frappe.client.get_value`, which have no built-in translated-value mode for arbitrary fields;
+3. the app expects `translatable` to behave like a localized content flag, while current core uses it mostly as a source-string translation hint.
+
+### D. Recommended integration direction for frontend consumers
+
+For the proposed multilingual document-data design, the frontend should **not** rely on the current `translatable` flag alone to magically change standard API responses. Instead, the backend contract needs to be explicit.
+
+Recommended options for frontend integration, in order of preference:
+
+#### Option 1 — Keep standard endpoints, change backend behavior behind them
+
+Best fit if transparent behavior is required.
+
+- Keep using the same API shapes (`frappe.client.get`, `frappe.client.get_value`, `frappe.client.get_list`, `/api/resource`).
+- Add the translation overlay in the backend service layer so these endpoints already return translated values when the effective request language is not the source language.
+- The React app does **not** need a new parameter; it only needs the request language context (`_lang`, session language, or authenticated user preference) to be correct.
+
+This is the cleanest option if the requirement is "users should each see field values in their own language when calling standard APIs."
+
+#### Option 2 — Add an explicit opt-in request parameter during rollout
+
+Best fit for backwards-compatible rollout.
+
+Add a custom API extension such as:
+
+- `GET /api/resource/Item/ITEM-001?_lang=ar&with_translations=1`
+- `frappe.client.get({ doctype, name, with_translations: 1 })`
+- `frappe.client.get_list({ doctype, fields, with_translations: 1 })`
+
+Behavior:
+
+- when `with_translations` is false/absent, return stored source values;
+- when `with_translations=1`, overlay translated field values using the effective language.
+
+This is easier to deploy safely for React clients because it makes the contract explicit and avoids surprising existing consumers.
+
+#### Option 3 — Add dedicated translated endpoints
+
+Example:
+
+- `/api/method/my_app.api.get_translated_doc`
+- `/api/method/my_app.api.get_translated_list`
+
+This is the safest short-term frontend contract, but it does not satisfy the long-term goal of transparent standard API behavior.
+
+### E. Recommendation to append to the design
+
+For this proposal, the most practical rollout plan is:
+
+1. **Phase 1:** implement backend translation overlay helpers plus explicit endpoints/params for React clients (`with_translations=1`).
+2. **Phase 2:** extend standard `frappe.client.get`, `frappe.client.get_value`, `frappe.client.get_list`, and `/api/resource` behavior to honor the same translation service using resolved request language.
+3. **Phase 3:** once compatibility is proven, make translated-value resolution the default for eligible fields in standard read APIs.
+
+That means the immediate fix for a React app is **not** merely "change the frontend param and core will handle it". Instead, one of the following backend changes is required:
+
+- customize the existing read endpoints to overlay translations, or
+- add an explicit `with_translations` API mode/endpoints and update the React app to call that mode.
+
+### 7. Existing interception points and hooks
 
 There is no dedicated core "translate field values on load" hook.
 
@@ -142,7 +280,7 @@ What does exist:
 
 So there are hooks around lifecycle and API endpoints, but not a single first-class hook that transparently rewrites field values for all retrieval methods.
 
-### 7. Existing translation infrastructure
+### 8. Existing translation infrastructure
 
 Frappe currently has two relevant translation systems.
 
@@ -185,7 +323,7 @@ This mechanism is **not** keyed by `{doctype, docname, fieldname}`. It is keyed 
 - it is not bound to document permissions or record lifecycle,
 - it does not express fallback semantics per field instance.
 
-### 8. Definitive current-state conclusion
+### 9. Definitive current-state conclusion
 
 **Native Frappe today does not provide a first-class database-level translation system for user-generated DocType field values.**
 
@@ -201,7 +339,7 @@ What does not exist natively:
 - transparent substitution of translated user content in `frappe.get_doc`, `frappe.get_value`, `frappe.get_list`, or `/api/resource/`,
 - built-in fallback rules for document content translations such as `item_name` in Arabic/Malayalam/English.
 
-### 9. Ambiguities and assumptions
+### 10. Ambiguities and assumptions
 
 Ambiguity:
 
