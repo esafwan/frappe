@@ -60,6 +60,9 @@ frappe.ui.SidebarHeader = class SidebarHeader {
 					label: "Session Defaults",
 					action: "frappe.ui.toolbar.setup_session_defaults()",
 					is_standard: 1,
+					condition: function () {
+						return frappe.boot.session_defaults.length != 0;
+					},
 					icon: "sliders-horizontal",
 				},
 				{
