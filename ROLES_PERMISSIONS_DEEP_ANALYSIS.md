@@ -10,15 +10,16 @@
 ## Table of Contents
 
 1. [Architecture Overview](#architecture-overview)
-2. [Permission Storage & Metadata](#permission-storage--metadata)
-3. [Permission Evaluation Flow](#permission-evaluation-flow)
-4. [Role System Architecture](#role-system-architecture)
-5. [User Permissions System](#user-permissions-system)
-6. [Caching & Performance](#caching--performance)
-7. [Database Integration](#database-integration)
-8. [Data Flow Diagrams](#data-flow-diagrams)
-9. [Component Interactions](#component-interactions)
-10. [Permission Precedence Rules](#permission-precedence-rules)
+2. [Data Model & Relationships](#data-model--relationships)
+3. [Permission Storage & Metadata](#permission-storage--metadata)
+4. [Permission Evaluation Flow](#permission-evaluation-flow)
+5. [Role System Architecture](#role-system-architecture)
+6. [User Permissions System](#user-permissions-system)
+7. [Caching & Performance](#caching--performance)
+8. [Database Integration](#database-integration)
+9. [Data Flow Diagrams](#data-flow-diagrams)
+10. [Component Interactions](#component-interactions)
+11. [Permission Precedence Rules](#permission-precedence-rules)
 
 ---
 
@@ -54,6 +55,324 @@
 │  └──────────────────┘      └──────────────────┘              │
 │                                                               │
 └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Data Model & Relationships
+
+### Entity Relationship Diagram
+
+```
+┌──────────────┐
+│     User     │◄─────────────────────┐
+│   (Table)    │                       │
+├──────────────┤                       │
+│ name (PK)    │                       │
+│ email        │                       │
+└──────────────┘                       │
+      │                                │
+      │ 1──────────────M               │
+      │                                │
+      ▼                                │
+┌──────────────────┐                   │
+│   User Role      │ (Child Table)     │
+│   (Tab User_role)│                   │
+├──────────────────┤                   │
+│ user (FK) ◄──────┴───────────┐       │
+│ role (FK) ─────────────┐     │       │
+│                        │     │       │
+└──────────────────┘     │     │       │
+      │                  │     │       │
+      │ 1──────────────M │     │       │
+      │                  │     │       │
+      ▼                  │     │       │
+┌──────────────────┐     │     │       │
+│  Role Profile    │     │     │       │
+│  (DocType)       │     │     │       │
+├──────────────────┤     │     │       │
+│ name (PK)        │     │     │       │
+│ roles[] ◄────────┴─────┤     │       │
+└──────────────────┘     │     │       │
+                         │     │       │
+                         ▼     │       │
+                    ┌──────────┴──┐    │
+                    │    Role     │    │
+                    │  (DocType)  │    │
+                    ├─────────────┤    │
+                    │ name (PK)   │    │
+                    │ disabled    │    │
+                    │ desk_access │    │
+                    └─────┬───────┘    │
+                          │            │
+                          │ 1──────────┴─M
+                          │
+                          ▼
+                    ┌────────────┐
+                    │   DocPerm  │ (Child Table)
+                    │  (Perm)    │
+                    ├────────────┤
+                    │parent(DT)  │
+                    │role (FK)   │
+                    │permlevel   │◄────┐
+                    │if_owner    │     │
+                    │read/write  │     │
+                    │create/del  │     │
+                    │etc.        │     │
+                    └────────────┘     │
+                                       │
+              ┌────────────────────────┘
+              │
+              ▼
+         ┌─────────────┐
+         │  DocField   │ (Child Table)
+         │  (Field)    │
+         ├─────────────┤
+         │ parent (DT) │
+         │ fieldname   │
+         │ permlevel ◄─┴─── Field-level permission grouping
+         │ read_only   │
+         │ fieldtype   │
+         │ hidden      │
+         │ collapsible │
+         │ mask        │
+         └─────────────┘
+
+
+Additional Relationships:
+
+┌──────────────────┐         ┌──────────────────────┐
+│ User Permission  │         │   DocShare           │
+│  (Document)      │         │ (Sharing System)     │
+├──────────────────┤         ├──────────────────────┤
+│ user (FK) ◄──────┼─────────┤ user (FK)            │
+│ allow (DT)       │         │ share_doctype        │
+│ for_value        │         │ share_name           │
+│ applicable_for   │         │ read/write/share     │
+│ is_default       │         │ everyone             │
+│ hide_descendants │         └──────────────────────┘
+└──────────────────┘
+
+┌──────────────────┐         ┌──────────────────────┐
+│ Permission Log   │         │ Permission Type      │
+│ (Audit)          │         │ (Custom Rights)      │
+├──────────────────┤         ├──────────────────────┤
+│ user             │         │ name (PK)            │
+│ doctype          │         │ perms[] (custom)     │
+│ docname          │         │                      │
+│ operation        │         └──────────────────────┘
+│ timestamp        │
+└──────────────────┘
+```
+
+### Key Relationships Explained
+
+#### **1. Role ↔ User (Many-to-Many via User Role)**
+
+```
+User: "john@company.com"
+  ├─ User Role 1: "Desk User"
+  ├─ User Role 2: "Sales User"
+  ├─ User Role 3: "Custom Role"
+  └─ User Role Profile: "Sales Manager Profile"
+      ├─ Role: "Sales Manager"
+      └─ Role: "Report Viewer"
+
+Result: john has 5 effective roles
+```
+
+**Where Stored**:
+- `tabUser_role` table (direct role assignment)
+- `tabUserRoleProfile` table (profile-based assignment)
+
+#### **2. Role ↔ DocType (One-to-Many via DocPerm)**
+
+```
+Role: "Sales User"
+  ├─ DocPerm (Order): read=1, write=1, create=1
+  ├─ DocPerm (Customer): read=1, write=0, create=0
+  ├─ DocPerm (Invoice): read=1, write=0, create=0
+  └─ DocPerm (Report): read=1, report=1
+
+Defines: What can "Sales User" do with each DocType
+```
+
+**Where Stored**:
+- `tabDocPerm` table (child table of DocType)
+- DocType metadata JSON files
+
+#### **3. DocType ↔ DocField ↔ PermLevel (Hierarchical Permission Levels)**
+
+```
+ORDER DocType:
+├─ Field: order_date (permlevel=0)
+│  └─ All permissions that grant read → can access
+│
+├─ Field: customer_po_no (permlevel=0)
+│  └─ All permissions that grant read → can access
+│
+├─ Section Break: Pricing Details (collapsible section)
+│
+├─ Field: rate (permlevel=1)
+│  └─ Only users with permlevel ≥ 1 read access → can see
+│  └─ Sales Manager (permlevel=1) can see
+│  └─ Regular Sales User (permlevel=0 only) cannot see
+│
+└─ Field: cost_price (permlevel=2)
+   └─ Only users with permlevel ≥ 2 read access → can see
+   └─ CFO/Finance Manager (permlevel=2) can see
+
+Permission Rule for "Sales User":
+  ├─ read=1, permlevel=0
+  └─ Access to: order_date, customer_po_no
+  └─ CANNOT access: rate (needs permlevel=1)
+  └─ CANNOT access: cost_price (needs permlevel=2)
+```
+
+**Permission Levels Concept**:
+```
+permlevel=0: Main document level (all users)
+permlevel=1: First level details (manager level)
+permlevel=2: Second level sensitive data (senior management)
+permlevel=3: Third level restricted info (C-level executives)
+
+DocPerm RULE: {
+  role: "Sales User",
+  permlevel: 0,      ← This rule applies to permlevel 0 fields only
+  read: 1,           ← Can read permlevel 0 fields
+  write: 1,          ← Can write permlevel 0 fields
+  create: 1
+}
+
+DocPerm RULE: {
+  role: "Sales Manager",
+  permlevel: 1,      ← This rule applies to permlevel 0 AND 1 fields
+  read: 1,           ← Can read permlevel 1 fields
+  write: 1
+}
+```
+
+#### **4. User ↔ User Permission ↔ DocType (Record-Level Filtering)**
+
+```
+User: "john@company.com"
+
+User Permissions:
+├─ Allow: Customer, For Value: CUST-001
+│  ├─ Applicable For: Order (restrict this doctype)
+│  └─ is_default: true (use when creating Order)
+│
+├─ Allow: Customer, For Value: CUST-002
+│  └─ Applicable For: Order
+│
+├─ Allow: Company, For Value: Company-USA
+│  ├─ Applicable For: All DocTypes
+│  └─ (This customer can ONLY access USA company records)
+│
+└─ Allow: Department, For Value: Sales
+   ├─ Applicable For: Employee
+   └─ (Can only view/edit Sales department employees)
+
+Result When Accessing Orders:
+- Can only see Orders with customer IN (CUST-001, CUST-002)
+- SQL Filter: WHERE customer IN (...)
+```
+
+**Where Stored**:
+- `tabUserPermission` table
+- Cached in Redis under `user_permissions:{username}`
+
+#### **5. DocType ↔ DocField ↔ Link Field (User Permission Chain)**
+
+```
+ORDER DocType has fields:
+├─ customer (Link field → Customer)
+├─ supplier (Link field → Supplier)
+└─ company (Link field → Company)
+
+User Permission Applied to "Order" via Link Fields:
+├─ User restricted: Only company = "Company-USA"
+│  └─ When creating Order:
+│     └─ MUST select company = "Company-USA"
+│     └─ Can ONLY see that company's orders
+│
+├─ User restricted: Only customer IN (CUST-001, CUST-002)
+│  └─ When creating Order:
+│     └─ MUST select customer from allowed list
+│     └─ Can ONLY see those customers' orders
+│
+└─ User NOT restricted on supplier
+   └─ Can access any supplier
+
+Validation happens on save:
+├─ Check document owner
+├─ Check direct document restrictions
+├─ Check each link field against user permissions
+└─ If any link field has restricted value → DENY
+```
+
+### 6. Share/Group Concept (Collaborative Access)
+
+```
+DocShare Table (Sharing Records):
+
+User A (john@company.com) shares:
+  ├─ Document: Order-001
+  │  └─ With User B: read=1, write=1, share=1
+  │
+  └─ Document: Customer-XYZ
+     └─ With User C: read=1, write=0
+
+Conceptually (though not explicitly stored):
+  ├─ "Share Group" = set of shared documents
+  ├─ john controls access to Order-001
+  ├─ john controls access to Customer-XYZ
+  └─ Sharing overrides all other restrictions
+```
+
+**Where Stored**:
+- `tabDocShare` table
+- Cached in Redis under `doctype_shares:{doctype}` and `user_shares:{user}`
+
+### Complete Relationship Flow for a Query
+
+```
+When User "john" tries to access "Order" list:
+
+1. Get User's Roles:
+   └─ User john has roles: ["Desk User", "Sales User", "All"]
+
+2. Find Applicable Role Permissions:
+   └─ For "Order" DocType:
+      └─ Role "Sales User" → read=1, write=1, permlevel=0
+      └─ Role "Desk User" → read=1, permlevel=0
+
+3. Check Permission Levels:
+   └─ john can access: permlevel 0 fields
+   └─ Result: He sees public fields but not sensitive ones
+
+4. Apply User Permissions Filters:
+   └─ User Permission "john" → Allow: Customer, For: CUST-001
+   └─ User Permission "john" → Allow: Company, For: Company-USA
+   └─ SQL: WHERE customer = 'CUST-001' AND company = 'Company-USA'
+
+5. Check if Owner-Only (if_owner):
+   └─ Order.permissions: if_owner=1 for some role
+   └─ Add: WHERE owner = 'john' OR (other conditions)
+
+6. Check Sharing:
+   └─ Get all Order records shared with john
+   └─ Add: WHERE id IN (shared_ids) OR (other conditions)
+
+7. Execute Query:
+   └─ SELECT * FROM Order
+      WHERE (customer = 'CUST-001' AND company = 'Company-USA')
+      OR (Order.id IN (shared_with_john))
+
+8. Filter Fields on Load:
+   └─ Load document
+   └─ Check each field.permlevel against john's access
+   └─ Hide fields john doesn't have access to
 ```
 
 ---
@@ -159,6 +478,124 @@ frappe.permissions.has_permission(doctype, ptype="read", doc=None, user=None)
    └─ YES → Grant specified shared rights
    └─ NO → Return False
 ```
+
+### Field-Level Permission Logic (PermLevel & Field Groups)
+
+**Understanding Permission Levels**:
+
+```
+Each DocField has a "permlevel" attribute (0, 1, 2, 3, ...)
+
+permlevel=0: Standard fields (everyone with "read" sees them)
+permlevel=1: Sensitive fields (only users with permlevel ≥ 1 see them)
+permlevel=2: Highly sensitive (only users with permlevel ≥ 2)
+permlevel=3: Executive level (only C-suite level users)
+
+Example: Order DocType
+
+Field: Item Name (permlevel=0)
+  └─ User with read=1, permlevel=0 → SEES IT
+
+Field: Unit Price (permlevel=1)
+  └─ User with read=1, permlevel=0 → CANNOT SEE
+  └─ User with read=1, permlevel=1 → SEES IT
+
+Field: Profit Margin (permlevel=2)
+  └─ User with read=1, permlevel=1 → CANNOT SEE
+  └─ User with read=1, permlevel=2 → SEES IT
+
+Field: Cost Price (permlevel=2)
+  └─ User with read=1, permlevel=1 → CANNOT SEE
+  └─ User with read=1, permlevel=2 → SEES IT
+```
+
+**Field Groups (Section Break, Column Break)**:
+
+```
+Section Break: "Pricing Details" (collapsible=1, permlevel=1)
+  ├─ Rate (permlevel=1)
+  ├─ Tax (permlevel=1)
+  └─ Total (permlevel=1)
+
+Effect:
+  └─ All fields in this section hidden if user lacks permlevel=1
+  └─ Entire section collapses/hides for unauthorized users
+
+Usage:
+  └─ Grouping sensitive fields together
+  └─ Single permission level applies to group
+  └─ Clean UI - sensitive sections not even shown to low-level users
+```
+
+**How PermLevel is Applied During Document Load**:
+
+```python
+# In frappe/model/document.py: apply_fieldlevel_read_permissions()
+
+doc.load_from_db()
+  ├─ Get user's permlevel access:
+  │  └─ get_permlevel_access("read")
+  │  └─ Returns: [0, 1] (user can access levels 0 and 1 only)
+  │
+  ├─ For each field in document:
+  │  ├─ Check: field.permlevel in allowed_permlevels?
+  │  ├─ YES: field stays, user can read it
+  │  ├─ NO: field hidden/cleared (user cannot read)
+  │  └─ Example: Cost Price (permlevel=2) hidden for level 1 user
+  │
+  └─ User receives document with only accessible fields
+```
+
+**Combining PermLevel with Other Permissions**:
+
+```
+DocPerm Rule in DocType:
+{
+  role: "Sales Manager",
+  permlevel: 0,
+  read: 1,
+  write: 1
+}
+
+This rule grants:
+  ├─ READ access to all fields with permlevel ≤ 0
+  ├─ WRITE access to all fields with permlevel ≤ 0
+  └─ Hidden fields: Any with permlevel > 0
+
+Separate DocPerm Rule:
+{
+  role: "Regional Manager",
+  permlevel: 1,
+  read: 1,
+  write: 1
+}
+
+This rule grants:
+  ├─ READ access to all fields with permlevel ≤ 1
+  ├─ WRITE access to all fields with permlevel ≤ 1
+  └─ Hidden fields: Any with permlevel > 1
+```
+
+**Permission Level Access Evaluation**:
+
+```python
+# In frappe/model/meta.py: get_permlevel_access()
+
+def get_permlevel_access(self, permission_type="read"):
+    has_access_to = []
+    roles = frappe.get_roles(user)
+
+    for perm in self.permissions:
+        if perm.role in roles and perm.get(permission_type):
+            # User's role has this permission
+            if perm.permlevel not in has_access_to:
+                has_access_to.append(perm.permlevel)
+
+    return has_access_to
+    # Returns: [0] or [0, 1] or [0, 1, 2] etc.
+```
+
+---
 
 ### Detailed Document Permission Check (get_doc_permissions)
 
@@ -1029,6 +1466,210 @@ RESULT
 
 ---
 
+## Data Model Hierarchy & Permission Resolution
+
+### Complete Hierarchical Relationship
+
+```
+SYSTEM LEVEL
+│
+├─ Role (System-defined or Custom)
+│  ├─ Desk User (automatic)
+│  ├─ All (automatic)
+│  ├─ Guest (automatic)
+│  ├─ Administrator (automatic)
+│  └─ Custom Roles (Sales User, etc.)
+│
+├─ Role Profile (Groups of Roles)
+│  └─ Example: "Sales Manager Profile"
+│     ├─ contains: Sales User role
+│     ├─ contains: Report Viewer role
+│     └─ contains: Dashboard Access role
+│
+└─ Permission Type (Custom Rights)
+   └─ Example: "can_approve_invoice"
+      ├─ Added to DocType as custom right
+      └─ Can be assigned in DocPerm rules
+│
+├─────────────────────────────────────────────┤
+│
+USER LEVEL
+│
+├─ User Document
+│  ├─ user_role[] (direct role assignment)
+│  │  ├─ Desk User
+│  │  └─ Sales User
+│  └─ user_role_profile[] (via profile)
+│     └─ Sales Manager Profile
+│        ├─ Sales User
+│        ├─ Report Viewer
+│        └─ Dashboard Access
+│
+├─ User Permission (Document/Record Restrictions)
+│  ├─ Allow: Customer, For: CUST-001
+│  │  ├─ applicable_for: Order
+│  │  ├─ is_default: True
+│  │  └─ hide_descendants: False
+│  └─ Allow: Company, For: Company-USA
+│     ├─ applicable_for: All
+│     └─ Filters all related records
+│
+└─ Doc Share (Explicit Sharing)
+   ├─ Document: Order-001
+   │  └─ User: john@company.com
+   │     ├─ read: 1
+   │     ├─ write: 1
+   │     └─ share: 1
+   └─ Document: Invoice-123
+      └─ User: john@company.com
+         ├─ read: 1
+         └─ write: 0
+│
+├─────────────────────────────────────────────┤
+│
+DOCTYPE LEVEL
+│
+├─ DocType Document
+│  ├─ Basic Properties
+│  │  ├─ name: "Order"
+│  │  ├─ is_submittable: True
+│  │  ├─ allow_import: True
+│  │  └─ issingle: False
+│  │
+│  ├─ DocPerm[] (Permission Rules) ◄─── ROLE-BASED PERMISSIONS
+│  │  ├─ Rule: Role="Sales User", PerLevel=0
+│  │  │  ├─ read=1, write=1, create=1, delete=0
+│  │  │  ├─ submit=0, cancel=0, amend=0
+│  │  │  ├─ print=1, email=1, export=0
+│  │  │  └─ if_owner=0
+│  │  │
+│  │  ├─ Rule: Role="Sales Manager", PerLevel=0
+│  │  │  ├─ read=1, write=1, create=1, delete=1
+│  │  │  ├─ submit=0, cancel=0, amend=0
+│  │  │  └─ if_owner=0
+│  │  │
+│  │  ├─ Rule: Role="Sales Manager", PerLevel=1
+│  │  │  └─ (Allows access to level 1 fields like pricing)
+│  │  │
+│  │  └─ Rule: Role="Finance", PerLevel=2
+│  │     └─ (Allows access to level 2 fields like cost)
+│  │
+│  └─ DocField[] (Field Definitions) ◄─── FIELD-LEVEL METADATA
+│     ├─ Field: order_no
+│     │  ├─ fieldtype: "Data"
+│     │  ├─ permlevel: 0 ◄─── All users with read can see
+│     │  ├─ read_only: False
+│     │  └─ label: "Order Number"
+│     │
+│     ├─ Field: customer
+│     │  ├─ fieldtype: "Link"
+│     │  ├─ options: "Customer"
+│     │  ├─ permlevel: 0 ◄─── All users can see
+│     │  ├─ ignore_user_permissions: False
+│     │  │  └─ Subject to customer-based user permissions
+│     │  └─ label: "Customer"
+│     │
+│     ├─ Section Break: "Pricing Details"
+│     │  ├─ collapsible: True
+│     │  ├─ permlevel: 1 ◄─── Entire section hidden unless level≥1
+│     │  └─ Hidden for permlevel=0 users
+│     │
+│     ├─ Field: unit_rate
+│     │  ├─ fieldtype: "Currency"
+│     │  ├─ permlevel: 1 ◄─── Hidden from permlevel=0 users
+│     │  └─ label: "Unit Rate"
+│     │
+│     ├─ Section Break: "Cost Analysis"
+│     │  ├─ collapsible: True
+│     │  ├─ permlevel: 2 ◄─── Hidden unless level≥2
+│     │  └─ Only Finance/Execs see
+│     │
+│     └─ Field: cost_price
+│        ├─ fieldtype: "Currency"
+│        ├─ permlevel: 2 ◄─── Executive level only
+│        └─ label: "Cost Price"
+│
+├─────────────────────────────────────────────┤
+│
+QUERY/EXECUTION LEVEL
+│
+└─ Permission Evaluation (at runtime)
+   ├─ Step 1: Get User's Effective Roles
+   │  └─ john has: [Desk User, Sales User]
+   │
+   ├─ Step 2: Find applicable DocPerm rules
+   │  └─ Match roles to DocPerm
+   │  └─ Get: read=1, write=1, permlevel=0
+   │
+   ├─ Step 3: Determine PermLevel Access
+   │  └─ permlevel=0 only
+   │  └─ Cannot see fields with permlevel>0
+   │
+   ├─ Step 4: Evaluate User Permissions
+   │  └─ john can only see customer=CUST-001
+   │  └─ SQL: WHERE customer='CUST-001'
+   │
+   ├─ Step 5: Apply Field Filtering
+   │  ├─ order_no (permlevel=0) → SHOWN
+   │  ├─ customer (permlevel=0) → SHOWN
+   │  ├─ Pricing Details section (permlevel=1) → HIDDEN
+   │  ├─ unit_rate (permlevel=1) → HIDDEN
+   │  ├─ Cost Analysis section (permlevel=2) → HIDDEN
+   │  └─ cost_price (permlevel=2) → HIDDEN
+   │
+   └─ Result: Filtered document with visible fields only
+```
+
+### Permission Evaluation Matrix
+
+| Component | Storage | Scope | Level | Override? |
+|-----------|---------|-------|-------|-----------|
+| **Role** | Role Doc | System | Global | No |
+| **DocPerm** | DocType Meta | DocType | System | Yes (via Custom DocPerm) |
+| **User Role** | User Table | User | System | Yes (assign/unassign) |
+| **Role Profile** | Role Profile Doc | User | System | Yes (create/modify) |
+| **PermLevel** | DocField | Field | System | Yes (Property Setter) |
+| **User Permission** | User Permission Doc | User + DocType | Document | Yes (create/modify) |
+| **DocShare** | DocShare Table | Document | Document | Yes (share/unshare) |
+| **Custom DocPerm** | Custom DocPerm Table | DocType | Document | Yes (edit) |
+| **Permission Hook** | hooks.py | DocType | Code | Yes (custom code) |
+
+### Resolution Order When Multiple Rules Exist
+
+```
+When evaluating permission for: User "john" → Action "read" → DocType "Order"
+
+1. Check all DocPerm rules for "Order"
+   ├─ Rule 1: Role="All", read=1 → APPLICABLE (john is "All")
+   ├─ Rule 2: Role="Desk User", read=1 → APPLICABLE (john is "Desk User")
+   ├─ Rule 3: Role="Sales User", read=1 → APPLICABLE (john is "Sales User")
+   ├─ Rule 4: Role="Finance", read=1 → NOT APPLICABLE (john not Finance)
+   └─ Rule 5: Role="Administrator", read=1 → NOT APPLICABLE
+
+2. Combine Applicable Rules (OR logic)
+   ├─ john gets: read=1 (from Any of above)
+   └─ Result: john can read Orders
+
+3. Evaluate PermLevel
+   ├─ If user has role with permlevel=0 permission
+   └─ Can see only permlevel=0 and below fields
+
+4. Apply User Restrictions
+   ├─ If john has: "Allow Customer CUST-001"
+   └─ Can only see Orders for that customer
+
+5. Check Sharing
+   ├─ Any Order explicitly shared with john?
+   └─ Those overriding user permission restrictions
+
+Final Result:
+  └─ john can read Orders for CUST-001 only
+  └─ Sees only permlevel=0 fields
+  └─ Plus any explicitly shared Orders
+```
+
+---
+
 ## Conclusion
 
 The Frappe permission system is a **multi-layered, cache-optimized, hierarchical access control** system that:
@@ -1050,6 +1691,23 @@ The architecture ensures that permission checks happen:
 
 ---
 
-**Document Version**: 2.0 - Deep Architecture Analysis
+**Document Version**: 3.0 - Complete with Data Model & Relationships
 **Last Updated**: 2026-03-27
-**Status**: Ready for Security & Performance Review Phase
+**Status**: Complete - Ready for Security & Performance Review Phase
+
+### What's Covered in This Document
+
+✅ **Architecture Overview** - System components and structure
+✅ **Data Model & Relationships** - Complete entity relationships and hierarchies
+✅ **Permission Storage** - How permissions are stored and organized
+✅ **Permission Evaluation Flow** - Step-by-step permission check logic
+✅ **Role System Architecture** - Role assignment, profiles, and caching
+✅ **User Permissions System** - Record-level filtering and restrictions
+✅ **Field-Level Permissions** - PermLevel, field groups, and access tiers
+✅ **Caching Strategy** - Three-layer caching with invalidation rules
+✅ **Database Integration** - SQL permission condition building
+✅ **Data Flows** - Complete flow diagrams for different scenarios
+✅ **Component Interactions** - How components work together
+✅ **Permission Precedence** - Complete hierarchy of permission rules
+✅ **Permission Resolution Matrix** - What wins in conflicts
+✅ **Complete Hierarchical Map** - System → User → DocType → Field levels
