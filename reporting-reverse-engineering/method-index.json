@@ -1,0 +1,40 @@
+{
+  "report_runtime": [
+    {
+      "method": "frappe.desk.query_report.get_script",
+      "file": "frappe/desk/query_report.py"
+    },
+    {
+      "method": "frappe.desk.query_report.run",
+      "file": "frappe/desk/query_report.py"
+    },
+    {
+      "method": "frappe.desk.query_report.generate_report_result",
+      "file": "frappe/desk/query_report.py"
+    },
+    {
+      "method": "frappe.core.doctype.report.report.Report.execute_query_report",
+      "file": "frappe/core/doctype/report/report.py"
+    },
+    {
+      "method": "frappe.core.doctype.report.report.Report.execute_script_report",
+      "file": "frappe/core/doctype/report/report.py"
+    },
+    {
+      "method": "frappe.desk.reportview.get",
+      "file": "frappe/desk/reportview.py"
+    },
+    {
+      "method": "frappe.core.doctype.prepared_report.prepared_report.make_prepared_report",
+      "file": "frappe/core/doctype/prepared_report/prepared_report.py"
+    },
+    {
+      "method": "frappe.core.doctype.prepared_report.prepared_report.generate_report",
+      "file": "frappe/core/doctype/prepared_report/prepared_report.py"
+    },
+    {
+      "method": "frappe.desk.doctype.dashboard_chart.dashboard_chart.get",
+      "file": "frappe/desk/doctype/dashboard_chart/dashboard_chart.py"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "apis": [
+    "frappe.desk.query_report.get_script",
+    "frappe.desk.query_report.run",
+    "frappe.desk.query_report.export_query",
+    "frappe.desk.reportview.get",
+    "frappe.desk.reportview.save_report",
+    "frappe.core.doctype.prepared_report.prepared_report.make_prepared_report",
+    "frappe.desk.doctype.dashboard_chart.dashboard_chart.get"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "report_types": [
+    {
+      "type": "Query Report",
+      "stored_in": "tabReport.query",
+      "runtime": "frappe.desk.query_report.run -> Report.execute_query_report"
+    },
+    {
+      "type": "Script Report",
+      "stored_in": "tabReport + file or report_script",
+      "runtime": "frappe.desk.query_report.run -> Report.execute_script_report"
+    },
+    {
+      "type": "Custom Report",
+      "stored_in": "tabReport.reference_report + json",
+      "runtime": "get_report_doc resolves reference_report then run"
+    },
+    {
+      "type": "Report Builder",
+      "stored_in": "tabReport.json",
+      "runtime": "reportview.py / Report.run_standard_report"
+    }
+  ]
+}
