@@ -78,6 +78,9 @@ def get_bootinfo():
 	bootinfo.home_folder = frappe.db.get_value("File", {"is_home_folder": 1})
 	bootinfo.navbar_settings = get_navbar_settings()
 	bootinfo.notification_settings = get_notification_settings()
+	bootinfo.notification_unread_count = frappe.db.count(
+		"Notification Log", {"read": 0, "for_user": frappe.session.user}
+	)
 	bootinfo.onboarding_tours = get_onboarding_ui_tours()
 	set_time_zone(bootinfo)
 
@@ -342,10 +345,10 @@ def get_user_pages_or_reports(parent, cache=False):
 
 
 def load_translations(bootinfo):
-	from frappe.translate import get_messages_for_boot
+	from frappe.translate import get_translation_version
 
 	bootinfo["lang"] = frappe.lang
-	bootinfo["__messages"] = get_messages_for_boot()
+	bootinfo["translations_version"] = get_translation_version()
 
 
 def get_user_info():
@@ -562,8 +565,9 @@ def get_sidebar_items(allowed_workspaces):
 			sidebar_doc = sidebar
 		if (
 			frappe.session.user == "Administrator"
-			or sidebar_doc.module in sidebar_doc.user.allow_modules
 			or sidebar_title == "My Workspaces"
+			or not sidebar_doc.module
+			or sidebar_doc.module in sidebar_doc.user.allow_modules
 		):
 			sidebar_items[sidebar_title.lower()] = {
 				"label": sidebar_title,
@@ -584,14 +588,19 @@ def get_sidebar_items(allowed_workspaces):
 					"collapsible": item.collapsible,
 					"indent": item.indent,
 					"keep_closed": item.keep_closed,
-					"display_depends_on": item.display_depends_on,
 					"url": item.url,
 					"show_arrow": item.show_arrow,
 					"filters": item.filters,
 					"route_options": item.route_options,
 					"tab": item.navigate_to_tab,
+					"open_in_new_tab": item.open_in_new_tab,
 				}
-				if item.link_type == "Report" and item.link_to and frappe.db.exists("Report", item.link_to):
+				if (
+					item.link_type == "Report"
+					and item.link_to
+					and frappe.db.exists("Report", item.link_to)
+					and not frappe.db.get_value("Report", item.link_to, "disabled")
+				):
 					report_type, ref_doctype = frappe.db.get_value(
 						"Report", item.link_to, ["report_type", "ref_doctype"]
 					)
